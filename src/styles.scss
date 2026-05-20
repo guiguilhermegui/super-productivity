@@ -131,7 +131,7 @@
   // below the WCO buttons and the strip reclaims the newly-freed space.
   body.isElectron.isNoMac.isObsidianStyleHeader
     > nav.action-nav-right.action-nav-right--teleported {
-    top: var(--wco-height);
+    top: calc(var(--wco-height) + var(--s));
   }
 
   [dir='rtl'] > nav.action-nav-right.action-nav-right--teleported {

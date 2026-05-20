@@ -36,10 +36,30 @@ import { OperationCaptureService } from '../capture/operation-capture.service';
 import { LOCK_NAMES } from '../core/operation-log.const';
 import { LockAcquisitionTimeoutError } from '../core/errors/sync-errors';
 import { SuperSyncStatusService } from './super-sync-status.service';
+import { T } from '../../t.const';
+
+/**
+ * Real LockService, but with a tiny default timeout so the loud-fail
+ * test below exhausts processDeferredActions's retry budget in tens of
+ * ms instead of 90s. All behaviour (Web Locks path, fallback mutex,
+ * cleanup) is otherwise untouched.
+ */
+const SHORT_TIMEOUT_MS = 50;
+
+class ShortTimeoutLockService extends LockService {
+  override request(
+    name: string,
+    cb: () => Promise<void>,
+    timeoutMs: number = SHORT_TIMEOUT_MS,
+  ): Promise<void> {
+    return super.request(name, cb, timeoutMs);
+  }
+}
 
 describe('regression #7700: operation-log lock reentry', () => {
   let effects: OperationLogEffects;
   let lockService: LockService;
+  let snackSpy: jasmine.SpyObj<SnackService>;
   const actions$: Observable<Action> = of();
   let opLogStoreSpy: jasmine.SpyObj<OperationLogStoreService>;
 
@@ -75,7 +95,7 @@ describe('regression #7700: operation-log lock reentry', () => {
     compactionSpy.compact.and.resolveTo();
     compactionSpy.emergencyCompact.and.resolveTo(true);
 
-    const snackSpy = jasmine.createSpyObj('SnackService', ['open']);
+    snackSpy = jasmine.createSpyObj('SnackService', ['open']);
     const storeSpy = jasmine.createSpyObj('Store', ['dispatch', 'select']);
     storeSpy.select.and.returnValue(of({}));
 
@@ -98,7 +118,9 @@ describe('regression #7700: operation-log lock reentry', () => {
       providers: [
         OperationLogEffects,
         // NOTE: real LockService — required to exercise reentrancy semantics.
-        LockService,
+        // Subclassed to use a short default timeout so the loud-fail retry
+        // budget completes in tens of ms instead of 90s.
+        { provide: LockService, useClass: ShortTimeoutLockService },
         provideMockActions(() => actions$),
         { provide: OperationLogStoreService, useValue: opLogStoreSpy },
         { provide: VectorClockService, useValue: vectorClockSpy },
@@ -171,5 +193,44 @@ describe('regression #7700: operation-log lock reentry', () => {
     expect(opLogStoreSpy.appendWithVectorClockUpdate).toHaveBeenCalledTimes(1);
     // Should be near-instant — orders of magnitude under the 30s lock timeout.
     expect(elapsed).toBeLessThan(1000);
+  });
+
+  /**
+   * Loud-fail guarantee: if a future refactor forgets to thread
+   * `callerHoldsOperationLogLock` through, the deferred action must NOT be
+   * silently dropped. writeOperation re-throws `LockAcquisitionTimeoutError`
+   * after the snack, so processDeferredActions's retry loop sees each
+   * failure, exhausts retries, and fires `DEFERRED_ACTION_FAILED`. Pre-fix
+   * the catch swallowed the timeout as success — that's the exact silent
+   * data-loss surface #7700 reported.
+   */
+  it('fails loudly (no silent swallow) if the flag is omitted while caller still holds sp_op_log', async () => {
+    bufferDeferredAction(createDeferredAction());
+
+    // Hold the lock comfortably longer than the full retry budget:
+    // 3 attempts × ~50ms timeout + 100ms + 200ms backoffs ≈ 450ms.
+    // 2000ms (40×) is generous.
+    await lockService.request(
+      LOCK_NAMES.OPERATION_LOG,
+      async () => {
+        // Caller forgot the flag — same as a buggy refactor.
+        await effects.processDeferredActions();
+      },
+      SHORT_TIMEOUT_MS * 40,
+    );
+
+    // Action was NOT written — no silent persistence.
+    expect(opLogStoreSpy.appendWithVectorClockUpdate).not.toHaveBeenCalled();
+    // The differentiating assertion: pre-loud-fail, writeOperation
+    // swallowed the timeout and returned success → the retry loop
+    // exited on attempt #1 and DEFERRED_ACTION_FAILED never fired.
+    // With the re-throw, the retry loop sees the exception, exhausts
+    // retries, and surfaces DEFERRED_ACTION_FAILED to the user.
+    expect(snackSpy.open).toHaveBeenCalledWith(
+      jasmine.objectContaining({
+        type: 'ERROR',
+        msg: T.F.SYNC.S.DEFERRED_ACTION_FAILED,
+      }),
+    );
   });
 });

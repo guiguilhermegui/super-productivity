@@ -4,6 +4,7 @@ import type { DeferredLocalActionsPort } from '@sp/sync-core';
 import { ALL_ACTIONS } from '../../util/local-actions.token';
 import { concatMap, filter } from 'rxjs/operators';
 import { LockService } from '../sync/lock.service';
+import { LockAcquisitionTimeoutError } from '../core/errors/sync-errors';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import {
   isPersistentAction,
@@ -296,6 +297,17 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
     } catch (e) {
       // 4.1.1 Error Handling for Optimistic Updates
       OpLog.err('OperationLogEffects: Failed to persist operation', e);
+      if (e instanceof LockAcquisitionTimeoutError) {
+        // #7700: do NOT silently swallow lock timeouts. Pre-fix, a reentrant
+        // sp_op_log timeout was caught here, the user got a snackbar, and the
+        // deferred action vanished from the op log. Re-throw after notifying so
+        // processDeferredActions's retry loop retries and persistOperation$'s
+        // concatMap surfaces the failure upstream. Defense in depth: even if a
+        // future caller forgets to pass callerHoldsOperationLogLock, the bug is
+        // loud instead of silent.
+        this.notifyUserAndTriggerRollback();
+        throw e;
+      }
       if (this.isQuotaExceededError(e)) {
         // Circuit breaker: prevent recursive quota handling
         if (this.isHandlingQuotaExceeded) {

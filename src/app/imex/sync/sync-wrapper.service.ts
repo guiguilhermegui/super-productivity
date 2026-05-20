@@ -76,7 +76,7 @@ import { OperationLogStoreService } from '../../op-log/persistence/operation-log
 import { OperationLogSyncService } from '../../op-log/sync/operation-log-sync.service';
 import { SyncSessionValidationService } from '../../op-log/sync/sync-session-validation.service';
 import { WrappedProviderService } from '../../op-log/sync-providers/wrapped-provider.service';
-import { SuperSyncProvider } from '@sp/sync-providers/super-sync';
+import { isSuperSyncWebSocketAccess } from '@sp/sync-providers/super-sync';
 import { HydrationStateService } from '../../op-log/apply/hydration-state.service';
 
 /**
@@ -285,9 +285,12 @@ export class SyncWrapperService {
       }
     });
 
-    // After successful sync, prompt for encryption if SuperSync is active without it.
-    // This ensures data is downloaded and merged first, preventing data loss.
-    if (result === SyncStatus.InSync) {
+    // After any successful sync, prompt for encryption if SuperSync is active
+    // without it. This ensures data is downloaded and merged first, preventing
+    // data loss. Note: a successful sync now returns UpdateRemote when data
+    // changed and InSync only when nothing changed (discussion #7196), so this
+    // gate must accept both — only HANDLED_ERROR skips the prompt.
+    if (result !== 'HANDLED_ERROR') {
       this._promptSuperSyncEncryptionIfNeeded().catch((err) => {
         SyncLog.err('Error prompting for encryption:', err);
       });
@@ -364,8 +367,13 @@ export class SyncWrapperService {
       return;
     }
 
-    const superSyncProvider = provider as unknown as SuperSyncProvider;
-    const wsParams = await superSyncProvider.getWebSocketParams();
+    if (!isSuperSyncWebSocketAccess(provider)) {
+      SyncLog.warn(
+        'SyncWrapperService: SuperSync provider does not expose WebSocket access',
+      );
+      return;
+    }
+    const wsParams = await provider.getWebSocketParams();
     if (!wsParams) {
       SyncLog.warn(
         'SyncWrapperService: No WebSocket params available from SuperSync provider',
@@ -556,6 +564,20 @@ export class SyncWrapperService {
       this._providerManager.setSyncStatus('IN_SYNC');
       SyncLog.log('SyncWrapperService: Sync complete, status=IN_SYNC');
 
+      // Did this sync actually move any data (either direction)? Used by the
+      // sync button to show "Data successfully synced" vs "Already in sync"
+      // (discussion #7196). UpdateRemote is reused here as the generic
+      // "data changed this sync" status — the only consumer that inspects the
+      // return value (main-header) treats all UpdateLocal/UpdateRemote variants
+      // identically, so no new enum value is needed.
+      const didDownloadChanges =
+        downloadResult.kind === 'snapshot_hydrated' ||
+        downloadResult.kind === 'server_migration_handled' ||
+        (downloadResult.kind === 'ops_processed' && downloadResult.newOpsCount > 0);
+      const didUploadChanges =
+        uploadResult.kind === 'completed' && uploadResult.uploadedCount > 0;
+      const didChange = didDownloadChanges || didUploadChanges;
+
       // Connect WebSocket after first successful SuperSync sync (fire-and-forget)
       if (
         providerId === SyncProviderId.SuperSync &&
@@ -569,7 +591,7 @@ export class SyncWrapperService {
         });
       }
 
-      return SyncStatus.InSync;
+      return didChange ? SyncStatus.UpdateRemote : SyncStatus.InSync;
     } catch (error) {
       SyncLog.err(error);
 
@@ -601,7 +623,13 @@ export class SyncWrapperService {
         // SuperSync AuthFailSPError gets special handling: tolerate up to 2 transient 401s
         // (e.g. infrastructure errors returning 401 instead of 500), but on the 3rd
         // consecutive failure, clear the token to break the stale-credential loop.
-        // Other providers (Dropbox, WebDAV) clear immediately so their OAuth/re-auth flows work.
+        // Dropbox clears its refreshable OAuth token immediately so its re-auth flow
+        // works. WebDAV/Nextcloud intentionally do NOT clear: the credential is a
+        // user-typed (often irrecoverable) password, not a refreshable token — they
+        // expose no clearAuthCredentials hook, so clearAuthCredentials() below is a
+        // no-op for them and the actionable snackbar handles recovery without
+        // destroying the user's config. See issue #7616 — do NOT re-add a WebDAV
+        // clearAuthCredentials override.
         let skipClear = false;
         if (error instanceof AuthFailSPError && providerId === SyncProviderId.SuperSync) {
           this._consecutiveSuperSyncAuthFailures++;

@@ -219,7 +219,12 @@ export class DialogSyncCfgComponent implements AfterViewInit {
   }
 
   private async _testNextcloudConnection(cfg: NextcloudPrivateCfg): Promise<void> {
-    if (!cfg?.serverUrl || !cfg?.userName || !cfg?.password || !cfg?.syncFolderPath) {
+    if (
+      !cfg?.serverUrl?.trim() ||
+      !cfg?.userName?.trim() ||
+      !cfg?.password ||
+      !cfg?.syncFolderPath?.trim()
+    ) {
       this._snackService.open({
         type: 'ERROR',
         msg: T.F.SYNC.FORM.WEB_DAV.S_FILL_ALL_FIELDS,
@@ -229,7 +234,8 @@ export class DialogSyncCfgComponent implements AfterViewInit {
     await this._testWebDavConnection({
       ...cfg,
       baseUrl: NextcloudProvider.buildBaseUrl(cfg),
-    } as unknown as WebdavPrivateCfg);
+      userName: NextcloudProvider.getAuthUserName(cfg),
+    } as WebdavPrivateCfg);
   }
 
   private async _testWebDavConnection(webDavCfg: WebdavPrivateCfg): Promise<void> {

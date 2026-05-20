@@ -30,7 +30,6 @@ import { ImmediateUploadService } from '../sync/immediate-upload.service';
 import { getDeferredActions, isDeferredAction } from './operation-capture.meta-reducer';
 import { ClientIdService } from '../../core/util/client-id.service';
 import { SuperSyncStatusService } from '../sync/super-sync-status.service';
-import { DateService } from '../../core/date/date.service';
 
 /**
  * NgRx Effects for persisting application state changes as operations to the
@@ -64,7 +63,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
   private operationCaptureService = inject(OperationCaptureService);
   private immediateUploadService = inject(ImmediateUploadService);
   private superSyncStatusService = inject(SuperSyncStatusService);
-  private dateService = inject(DateService);
 
   /**
    * Effect that persists local user actions to the operation log.
@@ -100,6 +98,7 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
     action: PersistentAction,
     skipDequeue = false,
   ): Promise<void> {
+    const operationTimestamp = Date.now();
     // Always read from ClientIdService (which has its own in-memory cache).
     // Do NOT cache locally — BackupService.generateNewClientId() updates the
     // service cache, and a local cache here would go stale after backup import.
@@ -176,7 +175,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
         // enqueueing — there's no matching queue entry to dequeue.
         const entityChanges = skipDequeue ? [] : this.operationCaptureService.dequeue();
 
-        const operationTimestamp = Date.now();
         const actionPayload = this.addReplayDateFieldsToActionPayload(
           action,
           rawActionPayload,
@@ -403,10 +401,6 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
             typeof taskChanges['doneOn'] === 'number'
               ? taskChanges['doneOn']
               : operationTimestamp,
-          dueDay:
-            typeof taskChanges['dueDay'] === 'string'
-              ? taskChanges['dueDay']
-              : this.dateService.todayStr(),
         },
       },
     };

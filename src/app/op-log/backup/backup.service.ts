@@ -18,6 +18,7 @@ import {
 import { CompleteBackup } from '../core/types/sync.types';
 import { ArchiveDbAdapter } from '../../core/persistence/archive-db-adapter.service';
 import { ArchiveModel } from '../../features/archive/archive.model';
+import { normalizeGlobalConfigStartOfNextDay } from '../../features/config/normalize-start-of-next-day-config';
 
 /**
  * Service for handling backup import and export operations.
@@ -98,6 +99,16 @@ export class BackupService {
         backupData = migrateLegacyBackup(
           backupData as unknown as Record<string, unknown>,
         );
+      }
+
+      const normalizedGlobalConfig = normalizeGlobalConfigStartOfNextDay(
+        backupData.globalConfig,
+      );
+      if (normalizedGlobalConfig) {
+        backupData = {
+          ...backupData,
+          globalConfig: normalizedGlobalConfig,
+        };
       }
 
       // 3. Validate data

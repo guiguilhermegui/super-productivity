@@ -154,6 +154,7 @@ export interface SuperSyncConfig extends WebDavConfig {
 
 export interface NextcloudConfig {
   serverUrl?: string | null;
+  loginName?: string | null;
   userName?: string | null;
   password?: string | null;
   syncFolderPath?: string | null;

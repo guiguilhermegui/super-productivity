@@ -12,7 +12,6 @@ import {
   selectCurrentTask,
   selectTaskById,
 } from '../features/tasks/store/task.selectors';
-import { setCurrentTask, unsetCurrentTask } from '../features/tasks/store/task.actions';
 
 describe('PluginHooksEffects', () => {
   let effects: PluginHooksEffects;
@@ -239,30 +238,107 @@ describe('PluginHooksEffects', () => {
   });
 
   describe('onCurrentTaskChange$', () => {
-    it('should dispatch CURRENT_TASK_CHANGE hook with the full task object on setCurrentTask', (done) => {
-      store.overrideSelector(selectCurrentTask, mockTask);
-      actions$ = of(setCurrentTask({ id: mockTask.id }));
+    it('should dispatch CURRENT_TASK_CHANGE with { current, previous: null } when a task becomes active from idle', (done) => {
+      store.overrideSelector(selectCurrentTask, null);
+      actions$ = of();
 
-      effects.onCurrentTaskChange$.subscribe(() => {
+      const sub = effects.onCurrentTaskChange$.subscribe();
+      store.overrideSelector(selectCurrentTask, mockTask);
+      store.refreshState();
+
+      // give microtasks a tick to flush
+      setTimeout(() => {
         expect(pluginServiceMock.dispatchHook).toHaveBeenCalledWith(
           PluginHooks.CURRENT_TASK_CHANGE,
-          mockTask,
+          { current: mockTask, previous: null },
         );
+        sub.unsubscribe();
         done();
-      });
+      }, 0);
     });
 
-    it('should dispatch CURRENT_TASK_CHANGE hook with null on unsetCurrentTask', (done) => {
-      store.overrideSelector(selectCurrentTask, null);
-      actions$ = of(unsetCurrentTask());
+    it('should dispatch CURRENT_TASK_CHANGE with { current: null, previous } when the active task is stopped', (done) => {
+      store.overrideSelector(selectCurrentTask, mockTask);
+      actions$ = of();
 
-      effects.onCurrentTaskChange$.subscribe(() => {
+      const sub = effects.onCurrentTaskChange$.subscribe();
+      store.overrideSelector(selectCurrentTask, null);
+      store.refreshState();
+
+      setTimeout(() => {
         expect(pluginServiceMock.dispatchHook).toHaveBeenCalledWith(
           PluginHooks.CURRENT_TASK_CHANGE,
-          null,
+          { current: null, previous: mockTask },
         );
+        sub.unsubscribe();
         done();
-      });
+      }, 0);
+    });
+
+    it('should emit both previous and current when switching between tasks', (done) => {
+      const otherTask = createMockTask({ id: 'task-other', title: 'Other Task' });
+      store.overrideSelector(selectCurrentTask, mockTask);
+      actions$ = of();
+
+      const sub = effects.onCurrentTaskChange$.subscribe();
+      store.overrideSelector(selectCurrentTask, otherTask);
+      store.refreshState();
+
+      setTimeout(() => {
+        expect(pluginServiceMock.dispatchHook).toHaveBeenCalledWith(
+          PluginHooks.CURRENT_TASK_CHANGE,
+          { current: otherTask, previous: mockTask },
+        );
+        sub.unsubscribe();
+        done();
+      }, 0);
+    });
+
+    it('should not re-emit when the same task is updated in place', (done) => {
+      store.overrideSelector(selectCurrentTask, null);
+      actions$ = of();
+
+      const sub = effects.onCurrentTaskChange$.subscribe();
+      store.overrideSelector(selectCurrentTask, mockTask);
+      store.refreshState();
+      // Same id, different object reference (e.g. title change while running).
+      store.overrideSelector(selectCurrentTask, { ...mockTask, title: 'Renamed' });
+      store.refreshState();
+
+      setTimeout(() => {
+        expect(pluginServiceMock.dispatchHook).toHaveBeenCalledTimes(1);
+        expect(pluginServiceMock.dispatchHook).toHaveBeenCalledWith(
+          PluginHooks.CURRENT_TASK_CHANGE,
+          { current: mockTask, previous: null },
+        );
+        sub.unsubscribe();
+        done();
+      }, 0);
+    });
+
+    it('should carry the latest snapshot of the running task into the stop event', (done) => {
+      // Simulates: start task → plugin mutates task (addTag) → stop. The stop
+      // payload's `previous` must reflect the post-mutation task state so a
+      // taskStopped handler can read the freshly-added field.
+      store.overrideSelector(selectCurrentTask, mockTask);
+      actions$ = of();
+
+      const sub = effects.onCurrentTaskChange$.subscribe();
+
+      const mutatedTask = createMockTask({ ...mockTask, tagIds: ['in-progress'] });
+      store.overrideSelector(selectCurrentTask, mutatedTask);
+      store.refreshState();
+      store.overrideSelector(selectCurrentTask, null);
+      store.refreshState();
+
+      setTimeout(() => {
+        expect(pluginServiceMock.dispatchHook).toHaveBeenCalledWith(
+          PluginHooks.CURRENT_TASK_CHANGE,
+          { current: null, previous: mutatedTask },
+        );
+        sub.unsubscribe();
+        done();
+      }, 0);
     });
   });
 });

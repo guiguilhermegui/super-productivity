@@ -383,6 +383,12 @@ export interface PluginAPI {
 
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
 
+  // readiness signal — register a callback to run after the app confirms all
+  // declared APIs (e.g. nodeExecution IPC bridge) are available. Put startup
+  // init code here instead of at the top level of plugin.js. Optional so older
+  // plugin API typings remain assignable; the host always provides it.
+  onReady?(fn: () => void | Promise<void>): void;
+
   // cross-process communication
   onMessage?(handler: (message: unknown) => Promise<unknown> | unknown): void;
 

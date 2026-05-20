@@ -343,12 +343,19 @@ export class PluginBridgeService implements OnDestroy {
       return;
     }
 
-    // Register sync adapter if plugin supports two-way sync
-    if (definition.fieldMappings?.length && definition.updateIssue) {
+    // Register adapter when plugin supports any issue side effects. Push support
+    // still requires updateIssue; create/delete can work without it.
+    if (
+      definition.createIssue ||
+      definition.deleteIssue ||
+      (definition.fieldMappings?.length && definition.updateIssue)
+    ) {
       const registered = this._pluginIssueProviderRegistry.getProvider(registeredKey);
       const httpOpts = { allowPrivateNetwork: registered?.allowPrivateNetwork };
-      const adapter = createPluginSyncAdapter(definition, (getHeaders) =>
-        this._pluginHttpService.createHttpHelper(getHeaders, httpOpts),
+      const adapter = createPluginSyncAdapter(
+        definition,
+        (getHeaders) => this._pluginHttpService.createHttpHelper(getHeaders, httpOpts),
+        this._tagService,
       );
       this._syncAdapterRegistry.register(registeredKey, adapter);
       PluginLog.log(
@@ -420,7 +427,8 @@ export class PluginBridgeService implements OnDestroy {
       duration: 5000, // 5 seconds default duration
     });
 
-    PluginLog.log('PluginBridge: Notification sent successfully', notifyCfg);
+    // No notifyCfg — title/body are user content; log history is exportable (rule #9).
+    PluginLog.log('PluginBridge: Notification sent successfully');
   }
 
   /**
@@ -1340,10 +1348,11 @@ export class PluginBridgeService implements OnDestroy {
 
     // Dispatch the action
     this._store.dispatch(action);
-    PluginLog.log(`PluginBridge: Dispatched action for plugin ${pluginId}`, {
-      actionType: action.type,
-      payload: action,
-    });
+    // Log the action TYPE only — the full action carries user content
+    // and the log history is user-exportable. See core/log.ts header / rule #9.
+    PluginLog.log(
+      `PluginBridge: Dispatched action '${action.type}' for plugin ${pluginId}`,
+    );
   }
 
   /**
@@ -1393,6 +1402,22 @@ export class PluginBridgeService implements OnDestroy {
             : this._translateService.instant(T.PLUGINS.FAILED_TO_EXECUTE_SCRIPT),
       };
     }
+  }
+
+  /**
+   * Ping the Node.js IPC bridge for a plugin using a trivial vm-executed script.
+   * Returns true if the bridge responds successfully, false otherwise.
+   */
+  async pingNodeBridge(pluginId: string, manifest: PluginManifest): Promise<boolean> {
+    // 1.5s is plenty for an in-process vm script that returns true — the ping
+    // is a bridge health check, not a long-running operation. Combined with
+    // pingWithRetry's defaults (3 attempts, 1s+2s delays) this caps cold-boot
+    // failure detection at ~7.5s instead of ~17s.
+    const result = await this._executeNodeScript(pluginId, manifest, {
+      script: 'return true',
+      timeout: 1500,
+    });
+    return result.success;
   }
 
   /**

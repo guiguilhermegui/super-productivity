@@ -8,9 +8,8 @@ import {
   RemoteFileNotFoundAPIError,
   TooManyRequestsAPIError,
 } from '../../../src/errors';
-import type { NativeHttpExecutor } from '../../../src/http/native-http-retry';
-import type { ProviderPlatformInfo } from '../../../src/platform/provider-platform-info';
-import type { WebFetchFactory } from '../../../src/platform/web-fetch-factory';
+import type { NativeHttpExecutor } from '../../../src/http';
+import type { ProviderPlatformInfo, WebFetchFactory } from '../../../src/platform';
 
 const makeDeps = (overrides: {
   isNativePlatform?: boolean;
@@ -219,22 +218,23 @@ describe('WebDavHttpAdapter', () => {
       };
     });
 
-    it('scrubs the URL to host+pathname in normal request logs', async () => {
+    it('scrubs WebDAV request log URLs to host only', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(okFetchResponse(200, 'ok'));
       const adapter = new WebDavHttpAdapter(
         makeDeps({ fetchImpl: fetchImpl as unknown as typeof fetch, logger }),
       );
 
       await adapter.request({
-        url: 'https://user:pass@dav.example.com/sync/file?token=secret',
+        url: 'https://user:pass@dav.example.com/remote.php/dav/files/alice/sync/file?token=secret',
         method: 'GET',
       });
 
-      // urlPathOnly strips userinfo, query, fragment
       const meta = loggedMessages[0]?.meta as { url?: string };
-      expect(meta?.url).toBe('dav.example.com/sync/file');
+      expect(meta?.url).toBe('dav.example.com');
       expect(JSON.stringify(loggedMessages)).not.toContain('secret');
       expect(JSON.stringify(loggedMessages)).not.toContain('user:pass');
+      expect(JSON.stringify(loggedMessages)).not.toContain('alice');
+      expect(JSON.stringify(loggedMessages)).not.toContain('sync/file');
     });
 
     it('logs structured errorMeta on unexpected error (no raw Error)', async () => {
@@ -257,7 +257,7 @@ describe('WebDavHttpAdapter', () => {
       expect(errorLog?.meta).toEqual(
         expect.objectContaining({
           errorName: 'Error',
-          url: 'dav.example.com/sync/file',
+          url: 'dav.example.com',
         }),
       );
     });

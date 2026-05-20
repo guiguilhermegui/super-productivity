@@ -190,11 +190,14 @@ test.describe('Focus Mode - Break Controls (Issue #5995)', () => {
     // Skip the break
     await skipBreakButton.click();
 
-    // Verify we're back on main screen and session auto-started
-    // (mode selector should NOT be visible because we're in progress)
+    // Verify we're back on main screen and session auto-started.
+    // Active sessions now keep the mode selector visible so the timer can be
+    // switched to Flowtime while running.
     await expect(focusModeMain).toBeVisible({ timeout: 5000 });
-    await expect(modeSelector).not.toBeVisible();
+    await expect(focusModeBreak).not.toBeVisible();
     await expect(completeSessionButton).toBeVisible();
+    await expect(modeSelector).toBeVisible();
+    await expect(pomodoroModeButton).toHaveAttribute('aria-checked', 'true');
   });
 
   test('Back to Planning should NOT auto-start next session', async ({ page }) => {

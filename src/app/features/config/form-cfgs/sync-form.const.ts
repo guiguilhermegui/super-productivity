@@ -266,11 +266,20 @@ export const SYNC_FORM: ConfigFormSection<SyncConfig> = {
           key: 'userName',
           type: 'input',
           templateOptions: {
-            label: T.F.SYNC.FORM.WEB_DAV.L_USER_NAME,
+            label: T.F.SYNC.FORM.NEXTCLOUD.L_FILE_USER_NAME,
+            description: T.F.SYNC.FORM.NEXTCLOUD.FILE_USER_NAME_DESCRIPTION,
           },
           expressions: {
             'props.required': (field: FormlyFieldConfig) =>
               field?.parent?.parent?.model?.syncProvider === SyncProviderId.Nextcloud,
+          },
+        },
+        {
+          key: 'loginName',
+          type: 'input',
+          templateOptions: {
+            label: T.F.SYNC.FORM.NEXTCLOUD.L_LOGIN_NAME,
+            description: T.F.SYNC.FORM.NEXTCLOUD.LOGIN_NAME_DESCRIPTION,
           },
         },
         {

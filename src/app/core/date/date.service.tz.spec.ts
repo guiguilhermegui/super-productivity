@@ -125,10 +125,30 @@ describe('DateService — logical clock helpers', () => {
   });
 
   it('setStartOfNextDayDiff() falls back to zero for malformed or empty strings', () => {
+    service.setStartOfNextDayDiff(4);
     service.setStartOfNextDayDiff('');
     expect(service.getStartOfNextDayDiffMs()).toBe(0);
 
+    service.setStartOfNextDayDiff(4);
     service.setStartOfNextDayDiff('not-a-time');
     expect(service.getStartOfNextDayDiffMs()).toBe(0);
+
+    service.setStartOfNextDayDiff(4);
+    service.setStartOfNextDayDiff('111');
+    expect(service.getStartOfNextDayDiffMs()).toBe(0);
+
+    service.setStartOfNextDayDiff(4);
+    service.setStartOfNextDayDiff('24:00');
+    expect(service.getStartOfNextDayDiffMs()).toBe(0);
+  });
+
+  it('setStartOfNextDayDiff() falls back to legacy hour when a time string is invalid', () => {
+    service.setStartOfNextDayDiff('24:00', 2);
+    expect(service.getStartOfNextDayDiffMs()).toBe(2 * 60 * 60 * 1000);
+  });
+
+  it('setStartOfNextDayDiff() falls back to legacy hour when time is undefined', () => {
+    service.setStartOfNextDayDiff(undefined, 2);
+    expect(service.getStartOfNextDayDiffMs()).toBe(2 * 60 * 60 * 1000);
   });
 });

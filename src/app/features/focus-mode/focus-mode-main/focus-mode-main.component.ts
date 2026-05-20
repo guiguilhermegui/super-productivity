@@ -168,7 +168,11 @@ export class FocusModeMainComponent {
   displayDuration = signal(25 * 60 * 1000); // Default 25 minutes
   isTaskSelectorOpen = signal(false);
 
-  isShowModeSelector = computed(() => this._isPreparation());
+  isShowModeSelector = computed(
+    () =>
+      this._isPreparation() ||
+      (this._isInProgress() && this.mode() !== FocusModeMode.Flowtime),
+  );
   isShowPomodoroSettings = computed(
     () => this._isPreparation() && this.mode() === FocusModeMode.Pomodoro,
   );
@@ -195,26 +199,35 @@ export class FocusModeMainComponent {
   isPlayButtonDisabled = computed(() => !this.currentTask());
 
   // Mode selector options
-  readonly modeOptions: ReadonlyArray<SegmentedButtonOption> = [
-    {
-      id: FocusModeMode.Flowtime,
-      icon: 'auto_awesome',
-      labelKey: T.F.FOCUS_MODE.FLOWTIME,
-      hintKey: T.F.FOCUS_MODE.FLOWTIME_HINT,
-    },
-    {
-      id: FocusModeMode.Pomodoro,
-      icon: 'timer',
-      labelKey: T.F.FOCUS_MODE.POMODORO,
-      hintKey: T.F.FOCUS_MODE.POMODORO_HINT,
-    },
-    {
-      id: FocusModeMode.Countdown,
-      icon: 'hourglass_bottom',
-      labelKey: T.F.FOCUS_MODE.COUNTDOWN,
-      hintKey: T.F.FOCUS_MODE.COUNTDOWN_HINT,
-    },
-  ];
+  readonly modeOptions = computed<ReadonlyArray<SegmentedButtonOption>>(() => {
+    const currentMode = this.mode();
+    const options: ReadonlyArray<SegmentedButtonOption> = [
+      {
+        id: FocusModeMode.Flowtime,
+        icon: 'auto_awesome',
+        labelKey: T.F.FOCUS_MODE.FLOWTIME,
+        hintKey: T.F.FOCUS_MODE.FLOWTIME_HINT,
+      },
+      {
+        id: FocusModeMode.Pomodoro,
+        icon: 'timer',
+        labelKey: T.F.FOCUS_MODE.POMODORO,
+        hintKey: T.F.FOCUS_MODE.POMODORO_HINT,
+      },
+      {
+        id: FocusModeMode.Countdown,
+        icon: 'hourglass_bottom',
+        labelKey: T.F.FOCUS_MODE.COUNTDOWN,
+        hintKey: T.F.FOCUS_MODE.COUNTDOWN_HINT,
+      },
+    ];
+
+    return this._isInProgress()
+      ? options.filter(
+          (option) => option.id === currentMode || option.id === FocusModeMode.Flowtime,
+        )
+      : options;
+  });
 
   isFocusNotes = signal(false);
   isDragOver = signal(false);
@@ -425,6 +438,11 @@ export class FocusModeMainComponent {
     if (!Object.values(FocusModeMode).includes(mode as FocusModeMode)) {
       return;
     }
+
+    if (this._isInProgress() && mode !== this.mode() && mode !== FocusModeMode.Flowtime) {
+      return;
+    }
+
     this._store.dispatch(setFocusModeMode({ mode: mode as FocusModeMode }));
   }
 

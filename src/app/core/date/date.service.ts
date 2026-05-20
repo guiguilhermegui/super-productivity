@@ -6,11 +6,18 @@ import { getStartOfNextDayDiffMs } from '../../util/start-of-next-day.util';
 export class DateService {
   private startOfNextDayDiff: number = 0;
 
-  setStartOfNextDayDiff(startOfNextDay: string | number): void {
-    this.startOfNextDayDiff =
-      typeof startOfNextDay === 'string'
-        ? getStartOfNextDayDiffMs(startOfNextDay, undefined)
-        : getStartOfNextDayDiffMs(undefined, startOfNextDay);
+  setStartOfNextDayDiff(
+    startOfNextDayTimeOrHour: string | number | undefined,
+    legacyStartOfNextDay?: number,
+  ): void {
+    const startOfNextDayTime =
+      typeof startOfNextDayTimeOrHour === 'string' ? startOfNextDayTimeOrHour : undefined;
+    const startOfNextDay =
+      typeof startOfNextDayTimeOrHour === 'number'
+        ? startOfNextDayTimeOrHour
+        : legacyStartOfNextDay;
+
+    this.startOfNextDayDiff = getStartOfNextDayDiffMs(startOfNextDayTime, startOfNextDay);
   }
 
   /**

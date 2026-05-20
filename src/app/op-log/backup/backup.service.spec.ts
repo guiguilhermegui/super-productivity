@@ -169,6 +169,27 @@ describe('BackupService', () => {
       expect(mockOpLogStore.saveStateCache).toHaveBeenCalled();
     });
 
+    it('should normalize invalid startOfNextDay config before persisting import', async () => {
+      const backupData = createMinimalValidBackup();
+      backupData.globalConfig.misc = {
+        ...backupData.globalConfig.misc,
+        startOfNextDay: 4,
+        startOfNextDayTime: '24:00',
+      } as any;
+
+      await service.importCompleteBackup(backupData as any, true, true);
+
+      const appendedOp = mockOpLogStore.append.calls.mostRecent().args[0] as Operation;
+      const appendedPayload = appendedOp.payload as any;
+      expect(appendedPayload.globalConfig.misc.startOfNextDay).toBe(4);
+      expect(appendedPayload.globalConfig.misc.startOfNextDayTime).toBe('04:00');
+
+      const savedState = mockOpLogStore.saveStateCache.calls.mostRecent().args[0]
+        .state as any;
+      expect(savedState.globalConfig.misc.startOfNextDay).toBe(4);
+      expect(savedState.globalConfig.misc.startOfNextDayTime).toBe('04:00');
+    });
+
     it('should write archiveYoung to IndexedDB when present in backup', async () => {
       const archiveYoung = createArchiveModel('archived-task-1', 'Archived Task Young');
       const backupData = {

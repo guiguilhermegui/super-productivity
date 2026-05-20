@@ -22,6 +22,31 @@ export interface PluginIframeConfig {
 export const PLUGIN_IFRAME_SANDBOX =
   'allow-scripts allow-same-origin allow-forms allow-popups allow-modals';
 
+const isTransparentCssValue = (value: string): boolean => {
+  const normalized = value.trim().replace(/\s+/g, '').toLowerCase();
+  if (!normalized || normalized === 'transparent') {
+    return true;
+  }
+  if (/^#[\da-f]{3}0$/.test(normalized) || /^#[\da-f]{6}00$/.test(normalized)) {
+    return true;
+  }
+  if (/^.+\/0(?:\.0+)?%?\)$/.test(normalized)) {
+    return true;
+  }
+  return /^(?:rgba?|hsla?)\([^,]+,[^,]+,[^,]+,0(?:\.0+)?%?\)$/.test(normalized);
+};
+
+const getPluginSurfaceVar = (
+  preferredSurface: string,
+  fallbackSurface: string,
+  baseSurface: string,
+): string => {
+  if (!isTransparentCssValue(preferredSurface)) {
+    return preferredSurface;
+  }
+  return isTransparentCssValue(fallbackSurface) ? baseSurface : fallbackSurface;
+};
+
 /**
  * Create CSS injection for plugins - KISS approach
  */
@@ -34,16 +59,20 @@ export const createPluginCssInjection = (): string => {
   const getVar = (name: string): string => {
     return computedStyle.getPropertyValue(name).trim();
   };
+  const bg = getVar('--bg');
+  const bgLighter = getVar('--bg-lighter');
+  const cardBg = getPluginSurfaceVar(getVar('--card-bg'), bgLighter, bg);
 
   return `
     <style id="injected-theme-vars">
       :root {
-        --bg: ${getVar('--bg')};
+        --bg: ${bg};
         --bg-darker: ${getVar('--bg-darker')};
+        --bg-lighter: ${bgLighter};
         --text-color: ${getVar('--text-color')};
         --text-color-less-intense: ${getVar('--text-color-less-intense')};
         --text-color-muted: ${getVar('--text-color-muted')};
-        --card-bg: ${getVar('--card-bg')};
+        --card-bg: ${cardBg};
         --card-shadow: ${getVar('--card-shadow')};
         --card-border-radius: ${getVar('--card-border-radius')};
         --divider-color: ${getVar('--divider-color')};
@@ -346,6 +375,30 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
           decrementCounter: (id, decrementBy) => callApi('decrementCounter', [id, decrementBy]),
           deleteCounter: (id) => callApi('deleteCounter', [id]),
           getAllCounters: () => callApi('getAllCounters'),
+
+          // Readiness signal for iframe plugins.
+          //
+          // NOTE — semantic difference from host-side onReady:
+          // The host implementation pings the Electron IPC bridge with retry before
+          // firing the callback (handles cold-boot races for nodeExecution plugins).
+          // Here, we just fire on the next microtask. This is acceptable because:
+          //   1. Iframe plugins are rendered on user navigation, long after host
+          //      startup — the cold-boot window has already passed.
+          //   2. executeNodeScript calls in iframe plugins proxy through the host
+          //      via callApi(); the host applies its own ping logic per call site.
+          // If iframe plugins ever auto-render at startup, route this through a
+          // host-side RPC that calls PluginService._fireOnReady.
+          onReady: (fn) => {
+            queueMicrotask(() => {
+              try {
+                Promise.resolve(fn()).catch((err) => {
+                  console.error('[Plugin] onReady callback error:', err);
+                });
+              } catch (err) {
+                console.error('[Plugin] onReady callback error:', err);
+              }
+            });
+          },
 
           // Message handling
           onMessage: (handler) => {

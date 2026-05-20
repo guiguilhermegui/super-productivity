@@ -1136,33 +1136,26 @@ describe('taskSharedCrudMetaReducer', () => {
       );
     });
 
-    it('should handle isDone updates and set doneOn timestamp and dueDay to today', () => {
+    it('should handle isDone updates and set doneOn timestamp and completion dueDay for unscheduled tasks', () => {
       const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
       const action = createUpdateTaskAction('task1', {
         isDone: true,
       });
 
       metaReducer(testState, action);
-      expectStateUpdate(
-        {
-          [TASK_FEATURE_NAME]: jasmine.objectContaining({
-            entities: jasmine.objectContaining({
-              task1: jasmine.objectContaining({
-                isDone: true,
-                doneOn: jasmine.any(Number),
-                dueDay: getDbDateStr(),
-              }),
-            }),
-          }),
-        },
-        action,
-        mockReducer,
-        testState,
+      const resultState = mockReducer.calls.mostRecent().args[0] as RootState;
+      const updatedTask = resultState[TASK_FEATURE_NAME].entities['task1'] as Task;
+      expect(updatedTask.isDone).toBe(true);
+      expect(updatedTask.doneOn).toEqual(jasmine.any(Number));
+      expect(updatedTask.dueDay).toBe(getDbDateStr());
+      expect((resultState[TAG_FEATURE_NAME].entities['TODAY'] as Tag).taskIds).toContain(
+        'task1',
       );
     });
 
     it('should add completed task to TODAY_TAG.taskIds', () => {
       const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
+      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = getDbDateStr();
       const action = createUpdateTaskAction('task1', {
         isDone: true,
       });
@@ -1182,6 +1175,7 @@ describe('taskSharedCrudMetaReducer', () => {
 
     it('should not duplicate task in TODAY_TAG.taskIds if already present', () => {
       const testState = createStateWithExistingTasks(['task1'], [], ['task1'], ['task1']);
+      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = getDbDateStr();
       const action = createUpdateTaskAction('task1', {
         isDone: true,
       });
@@ -1193,11 +1187,11 @@ describe('taskSharedCrudMetaReducer', () => {
       expect(todayTag.taskIds.filter((id) => id === 'task1').length).toBe(1);
     });
 
-    it('should clear dueWithTime when marking task as done', () => {
+    it('should preserve dueWithTime when marking task as done', () => {
       const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
+      const dueWithTime = Date.now() + 3600000;
       // Set dueWithTime on the task
-      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueWithTime =
-        Date.now() + 3600000;
+      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueWithTime = dueWithTime;
       const action = createUpdateTaskAction('task1', {
         isDone: true,
       });
@@ -1209,7 +1203,7 @@ describe('taskSharedCrudMetaReducer', () => {
             entities: jasmine.objectContaining({
               task1: jasmine.objectContaining({
                 isDone: true,
-                dueWithTime: undefined,
+                dueWithTime,
               }),
             }),
           }),
@@ -1249,9 +1243,10 @@ describe('taskSharedCrudMetaReducer', () => {
       );
     });
 
-    it('should override future dueDay with today when marking task as done', () => {
+    it('should preserve future dueDay when marking task as done', () => {
+      const futureDate = '2099-12-25';
       const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
-      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = '2099-12-25';
+      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = futureDate;
       const action = createUpdateTaskAction('task1', {
         isDone: true,
       });
@@ -1260,13 +1255,31 @@ describe('taskSharedCrudMetaReducer', () => {
       expectStateUpdate(
         {
           ...expectTaskUpdate('task1', {
-            dueDay: getDbDateStr(),
+            dueDay: futureDate,
           }),
         },
         action,
         mockReducer,
         testState,
       );
+    });
+
+    it('should ignore legacy synthetic completion dueDay for an already scheduled task', () => {
+      const scheduledDate = '2099-12-25';
+      const completionDay = getDbDateStr();
+      const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
+      (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = scheduledDate;
+      const action = createUpdateTaskAction('task1', {
+        isDone: true,
+        dueDay: completionDay,
+        doneOn: Date.now(),
+      });
+
+      metaReducer(testState, action);
+      const resultState = mockReducer.calls.mostRecent().args[0] as RootState;
+      const updatedTask = resultState[TASK_FEATURE_NAME].entities['task1'] as Task;
+      expect(updatedTask.isDone).toBe(true);
+      expect(updatedTask.dueDay).toBe(scheduledDate);
     });
 
     it('should not add subtask to TODAY_TAG.taskIds when marked done', () => {
@@ -1293,7 +1306,7 @@ describe('taskSharedCrudMetaReducer', () => {
       expect(todayTag.taskIds).not.toContain(subtaskId);
     });
 
-    it('should remove task from planner days when marked done', () => {
+    it('should preserve planner days when a scheduled task is marked done', () => {
       const futureDate = '2099-12-25';
       const testState = createStateWithExistingTasks(['task1'], [], ['task1']);
       (testState[TASK_FEATURE_NAME].entities['task1'] as any).dueDay = futureDate;
@@ -1307,7 +1320,7 @@ describe('taskSharedCrudMetaReducer', () => {
 
       metaReducer(testState, action);
       const resultState = mockReducer.calls.mostRecent().args[0] as any;
-      expect(resultState.planner.days[futureDate] || []).not.toContain('task1');
+      expect(resultState.planner.days[futureDate] || []).toContain('task1');
     });
 
     it('should skip tag updates when tagIds are not provided', () => {

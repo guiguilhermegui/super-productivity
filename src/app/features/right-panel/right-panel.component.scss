@@ -29,14 +29,6 @@
   }
 }
 
-// Vertical action bar layout: right-panel is a direct child of
-// .app-container (sibling of magic-side-nav) so its side spans the full
-// viewport height including the area above the header.
-:host-context(.app-container.has-vertical-action-bar) {
-  flex: 1;
-  height: 100%;
-}
-
 // Disable transitions during external resize drags
 :host(.resizing) {
   .side {
@@ -70,13 +62,6 @@
   min-width: 0;
   position: relative;
   z-index: var(--z-right-panel);
-}
-
-// Vertical action bar: <main> is projected into .content, so it must be a
-// column flex container for the route + progress bar to fill the height.
-:host-context(.app-container.has-vertical-action-bar) .content {
-  display: flex;
-  flex-direction: column;
 }
 
 .side {

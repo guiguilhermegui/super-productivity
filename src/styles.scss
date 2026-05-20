@@ -36,10 +36,12 @@
     --header-nav-button-gap: var(--s);
     display: flex;
     position: fixed;
-    // Top inset = header height so the native title bar / WCO overlay /
-    // Mac traffic lights are untouched. No drag region or window-control
-    // re-implementation needed in the strip itself.
-    inset: var(--bar-height) 0 0 auto;
+    // Default: strip starts at viewport top (web, Mac, native-frame
+    // Electron — none of these have a window-control overlay clashing
+    // with the right edge). Only Win/Linux Electron with custom title
+    // bar pushes the strip down by the header height to clear the WCO
+    // overlay band (rule below).
+    inset: 0 0 0 auto;
     width: var(--vertical-action-bar-width);
     margin: 0;
     padding: var(--s-half) 0;
@@ -123,15 +125,16 @@
     }
   }
 
-  // Mac (hiddenInset): header itself absorbs --mac-title-bar-padding (see
-  // main-header.scss), so the strip's top:var(--bar-height) lands a touch
-  // below the visible header on Mac. Nudge it down to stay flush.
-  body.isMac.isElectron > nav.action-nav-right.action-nav-right--teleported {
-    top: calc(var(--bar-height) + var(--mac-title-bar-padding) - 8px);
+  // Win/Linux Electron with custom title bar: WCO renders a ~44px overlay
+  // band at top-right. Push the strip down by header height so its first
+  // button doesn't sit under the WCO buttons.
+  body.isElectron.isNoMac.isObsidianStyleHeader
+    > nav.action-nav-right.action-nav-right--teleported {
+    top: var(--bar-height);
   }
 
   [dir='rtl'] > nav.action-nav-right.action-nav-right--teleported {
-    inset: var(--bar-height) auto 0 0;
+    inset: 0 auto 0 0;
     border-left: none;
     border-right: 1px solid var(--separator-color);
   }

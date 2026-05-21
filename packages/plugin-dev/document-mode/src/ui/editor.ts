@@ -1157,14 +1157,34 @@ const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
   positionPopover(menuEl, rect);
 };
 
+/**
+ * Selection rect for the slash menu. `getRangeAt(0).getBoundingClientRect()`
+ * returns a zero-sized rect at (0,0) for empty blocks (e.g. the paragraph
+ * we just inserted from the gutter "+"), which would place the menu in
+ * the top-left of the iframe. ProseMirror's `coordsAtPos` always returns
+ * useful coords, so prefer that when possible.
+ */
+const caretRect = (): DOMRect => {
+  if (editor) {
+    try {
+      const c = editor.view.coordsAtPos(editor.state.selection.from);
+      return new DOMRect(c.left, c.top, 0, c.bottom - c.top);
+    } catch {
+      // fall through to selection-based rect
+    }
+  }
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0) {
+    return sel.getRangeAt(0).getBoundingClientRect();
+  }
+  return new DOMRect(0, 0, 0, 0);
+};
+
 const showSlashMenu = (): void => {
   if (!editor) return;
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
   menuActiveIndex = 0;
   menuFilter = '';
-  renderMenu(rect, insertItems());
+  renderMenu(caretRect(), insertItems());
 };
 
 const filterAndRender = (rect: DOMRect): void => {
@@ -1399,8 +1419,10 @@ const createGutter = (): HTMLDivElement => {
     ev.preventDefault();
     ev.stopPropagation();
     if (!hoveredBlock || !editor) return;
+    // posAtDOM returns -1 if the block is no longer mapped (re-rendered between
+    // hover and click). Bail rather than throwing on resolve(-1).
     const pos = editor.view.posAtDOM(hoveredBlock, 0);
-    // Insert paragraph after hovered block then open slash menu at new pos.
+    if (pos < 0) return;
     const $pos = editor.state.doc.resolve(pos);
     const blockEnd = $pos.end($pos.depth);
     editor
@@ -1490,7 +1512,9 @@ const openBlockMenu = (anchorRect: DOMRect): void => {
   if (!editor || !hoveredBlock) return;
   const ed = editor;
   const pos = ed.view.posAtDOM(hoveredBlock, 0);
+  if (pos < 0) return;
   const $pos = ed.state.doc.resolve(pos);
+  if ($pos.depth === 0) return;
   const nodePos = $pos.before($pos.depth);
   const blockIdx = $pos.index(0);
   const childCount = ed.state.doc.childCount;
@@ -1667,10 +1691,7 @@ const mount = async (): Promise<void> => {
           menuActiveIndex =
             (menuActiveIndex - 1 + menuCurrentItems.length) % menuCurrentItems.length;
         }
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
-          renderMenu(sel.getRangeAt(0).getBoundingClientRect(), menuCurrentItems);
-        }
+        renderMenu(caretRect(), menuCurrentItems);
         return;
       }
       if (ev.key === 'Enter') {
@@ -1687,19 +1708,13 @@ const mount = async (): Promise<void> => {
           closeMenu();
         } else {
           menuFilter = menuFilter.slice(0, -1);
-          const sel = window.getSelection();
-          if (sel && sel.rangeCount > 0) {
-            filterAndRender(sel.getRangeAt(0).getBoundingClientRect());
-          }
+          filterAndRender(caretRect());
         }
         return;
       }
       if (ev.key.length === 1) {
         menuFilter += ev.key;
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
-          filterAndRender(sel.getRangeAt(0).getBoundingClientRect());
-        }
+        filterAndRender(caretRect());
         return;
       }
     } else if (ev.key === '/') {

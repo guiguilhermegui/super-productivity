@@ -161,6 +161,8 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
         const pendingCalls = new Map();
         const dialogButtonHandlers = new Map();
         const hookHandlers = new Map(); // Store hook handlers by hook type
+        const workContextBtnHandlers = new Map(); // buttonHandlerId -> onClick
+        let workContextBtnHandlerSeq = 0;
 
         // Handle responses from parent
         window.addEventListener('message', function(event) {
@@ -197,6 +199,15 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
                   buttonIndex: data.buttonIndex,
                   error: error.message
                 }, '*');
+              }
+            }
+          } else if (data?.type === '${PluginIframeMessageType.WORK_CONTEXT_BTN_CLICK}') {
+            const handler = workContextBtnHandlers.get(data.buttonHandlerId);
+            if (handler) {
+              try {
+                handler(data.ctx);
+              } catch (error) {
+                console.error('Plugin work-context button handler error:', error);
               }
             }
           } else if (data?.type === '${PluginIframeMessageType.HOOK_EVENT}') {
@@ -280,6 +291,7 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
 
           // Add Hooks enum
           Hooks: {
+            TASK_CREATED: 'taskCreated',
             TASK_COMPLETE: 'taskComplete',
             TASK_UPDATE: 'taskUpdate',
             TASK_DELETE: 'taskDelete',
@@ -287,7 +299,10 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
             FINISH_DAY: 'finishDay',
             LANGUAGE_CHANGE: 'languageChange',
             PERSISTED_DATA_UPDATE: 'persistedDataUpdate',
-            ACTION: 'action'
+            ACTION: 'action',
+            ANY_TASK_UPDATE: 'anyTaskUpdate',
+            PROJECT_LIST_UPDATE: 'projectListUpdate',
+            WORK_CONTEXT_CHANGE: 'workContextChange'
           },
 
           // Task methods
@@ -319,6 +334,9 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
           openDialog: (cfg) => callApi('openDialog', [cfg]),
           showIndexHtmlAsView: () => callApi('showIndexHtmlAsView'),
           showIndexHtmlInSidePanel: () => callApi('showIndexHtmlInSidePanel'),
+          showInWorkContext: () => callApi('showInWorkContext'),
+          closeWorkContextView: () => callApi('closeWorkContextView'),
+          getActiveWorkContext: () => callApi('getActiveWorkContext'),
 
           // Persistence methods
           persistDataSynced: (data) => callApi('persistDataSynced', [data]),
@@ -332,6 +350,17 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
           registerConfigHandler: (handler) => callApi('registerConfigHandler', [handler]),
           registerShortcut: (cfg) => callApi('registerShortcut', [cfg]),
           registerSidePanelButton: (cfg) => callApi('registerSidePanelButton', [cfg]),
+          registerWorkContextHeaderButton: (cfg) => {
+            // onClick is not structured-cloneable across postMessage; store it
+            // locally and send a handler id placeholder. Host posts a
+            // WORK_CONTEXT_BTN_CLICK message back when the button is invoked.
+            const handlerId = ++workContextBtnHandlerSeq;
+            workContextBtnHandlers.set(handlerId, cfg.onClick);
+            const { onClick, ...rest } = cfg;
+            return callApi('registerWorkContextHeaderButton', [
+              { ...rest, __handlerId: handlerId },
+            ]);
+          },
 
           // Node execution (if available)
           executeNodeScript: (request) => callApi('executeNodeScript', [request]),
@@ -471,6 +500,45 @@ export const handlePluginMessage = async (
     try {
       // For iframe plugins, we need to handle API calls differently
       // Some methods need special handling because the bridge methods have different signatures
+
+      // registerWorkContextHeaderButton: wrap the iframe's handler id with a
+      // proxy fn that posts back into the iframe when invoked.
+      if (method === 'registerWorkContextHeaderButton' && args.length >= 1) {
+        const rawCfg = args[0] as Record<string, unknown>;
+        const handlerId = rawCfg.__handlerId as number | undefined;
+        if (typeof handlerId !== 'number') {
+          throw new Error('registerWorkContextHeaderButton missing __handlerId');
+        }
+        const { __handlerId, ...rest } = rawCfg;
+        void __handlerId;
+        const wrappedCfg = {
+          ...rest,
+          onClick: (ctx: unknown): void => {
+            (event.source as Window)?.postMessage(
+              {
+                type: PluginIframeMessageType.WORK_CONTEXT_BTN_CLICK,
+                buttonHandlerId: handlerId,
+                ctx,
+              },
+              '*',
+            );
+          },
+        };
+        const boundMethods = config.boundMethods as Record<string, unknown>;
+        const fn = boundMethods.registerWorkContextHeaderButton as (
+          c: unknown,
+        ) => unknown;
+        const result = await fn(wrappedCfg);
+        event.source?.postMessage(
+          {
+            type: PluginIframeMessageType.API_RESPONSE,
+            callId,
+            result,
+          },
+          { targetOrigin: '*' },
+        );
+        return;
+      }
 
       // For registerHook, we need to add the pluginId parameter when calling the bridge
       if (method === 'registerHook') {

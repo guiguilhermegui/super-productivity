@@ -19,6 +19,8 @@ import {
   PluginNodeScriptResult,
   PluginShortcutCfg,
   PluginSidePanelBtnCfg,
+  PluginWorkContextHeaderBtnCfg,
+  ActiveWorkContext,
   Project,
   SnackCfg,
   Tag,
@@ -151,6 +153,13 @@ export class PluginAPI implements PluginAPIInterface {
     this._boundMethods.registerSidePanelButton(sidePanelBtnCfg);
   }
 
+  registerWorkContextHeaderButton(
+    cfg: Omit<PluginWorkContextHeaderBtnCfg, 'pluginId'>,
+  ): void {
+    PluginLog.log(`Plugin ${this._pluginId} registered work-context header button`, cfg);
+    this._boundMethods.registerWorkContextHeaderButton(cfg);
+  }
+
   registerIssueProvider(definition: IssueProviderPluginDefinition): void {
     PluginLog.log(`Plugin ${this._pluginId} registering issue provider`);
     this._boundMethods.registerIssueProvider(definition);
@@ -159,6 +168,20 @@ export class PluginAPI implements PluginAPIInterface {
   showIndexHtmlAsView(): void {
     PluginLog.log(`Plugin ${this._pluginId} requested to show index.html`);
     return this._boundMethods.showIndexHtmlAsView();
+  }
+
+  showInWorkContext(): void {
+    PluginLog.log(`Plugin ${this._pluginId} requested work-context embed`);
+    this._boundMethods.showInWorkContext();
+  }
+
+  closeWorkContextView(): void {
+    PluginLog.log(`Plugin ${this._pluginId} closed work-context embed`);
+    this._boundMethods.closeWorkContextView();
+  }
+
+  async getActiveWorkContext(): Promise<ActiveWorkContext | null> {
+    return this._boundMethods.getActiveWorkContext();
   }
 
   async getTasks(): Promise<Task[]> {

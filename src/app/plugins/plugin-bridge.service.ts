@@ -1,4 +1,5 @@
-import { inject, Injectable, Injector, OnDestroy, signal } from '@angular/core';
+import { computed, inject, Injectable, Injector, OnDestroy, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { SnackService } from '../core/snack/snack.service';
@@ -15,6 +16,8 @@ import {
   PluginNodeScriptResult,
   PluginShortcutCfg,
   PluginSidePanelBtnCfg,
+  PluginWorkContextHeaderBtnCfg,
+  ActiveWorkContext,
   Task,
 } from './plugin-api.model';
 
@@ -135,6 +138,39 @@ export class PluginBridgeService implements OnDestroy {
   private readonly _sidePanelButtons = signal<PluginSidePanelBtnCfg[]>([]);
   public readonly sidePanelButtons = this._sidePanelButtons.asReadonly();
 
+  // Track work-context-scoped header buttons registered by plugins. These are
+  // filtered against the active work context (project or TODAY tag) before
+  // rendering — see workContextHeaderButtons below.
+  private readonly _workContextHeaderButtons = signal<PluginWorkContextHeaderBtnCfg[]>(
+    [],
+  );
+
+  // Snapshot of the active work context, used to filter context-scoped buttons.
+  private readonly _activeWorkContextSig = toSignal(
+    this._workContextService.activeWorkContext$,
+    { initialValue: null },
+  );
+
+  public readonly workContextHeaderButtons = computed(() => {
+    const ctx = this._activeWorkContextSig();
+    const buttons = this._workContextHeaderButtons();
+    if (!ctx) return [] as PluginWorkContextHeaderBtnCfg[];
+    let key: 'PROJECT' | 'TAG' | 'TODAY';
+    if (ctx.type === 'PROJECT') {
+      key = 'PROJECT';
+    } else if (ctx.id === 'TODAY') {
+      key = 'TODAY';
+    } else {
+      key = 'TAG';
+    }
+    return buttons.filter((b) => b.showFor.includes(key));
+  });
+
+  // Holds the pluginId currently embedded in the work-view body, or null when
+  // the normal task list should render. Set via showInWorkContext().
+  private readonly _workContextEmbedPluginId = signal<string | null>(null);
+  public readonly workContextEmbedPluginId = this._workContextEmbedPluginId.asReadonly();
+
   // Track config handlers registered by plugins (for settings button on plugin card)
   private readonly _configHandlers = new Map<string, () => void>();
 
@@ -158,8 +194,14 @@ export class PluginBridgeService implements OnDestroy {
     registerHeaderButton: (cfg: PluginHeaderBtnCfg) => void;
     registerMenuEntry: (cfg: Omit<PluginMenuEntryCfg, 'pluginId'>) => void;
     registerSidePanelButton: (cfg: Omit<PluginSidePanelBtnCfg, 'pluginId'>) => void;
+    registerWorkContextHeaderButton: (
+      cfg: Omit<PluginWorkContextHeaderBtnCfg, 'pluginId'>,
+    ) => void;
     registerShortcut: (cfg: PluginShortcutCfg) => void;
     showIndexHtmlAsView: () => void;
+    showInWorkContext: () => void;
+    closeWorkContextView: () => void;
+    getActiveWorkContext: () => Promise<ActiveWorkContext | null>;
     triggerSync: () => Promise<void>;
     dispatchAction: (action: { type: string; [key: string]: unknown }) => void;
     executeNodeScript: (
@@ -202,12 +244,18 @@ export class PluginBridgeService implements OnDestroy {
         this._registerMenuEntry(pluginId, cfg),
       registerSidePanelButton: (cfg: Omit<PluginSidePanelBtnCfg, 'pluginId'>) =>
         this._registerSidePanelButton(pluginId, cfg),
+      registerWorkContextHeaderButton: (
+        cfg: Omit<PluginWorkContextHeaderBtnCfg, 'pluginId'>,
+      ) => this._registerWorkContextHeaderButton(pluginId, cfg),
       registerShortcut: (cfg: PluginShortcutCfg) => this._registerShortcut(pluginId, cfg),
       registerConfigHandler: (handler: () => void) =>
         this._configHandlers.set(pluginId, handler),
 
       // Navigation
       showIndexHtmlAsView: () => this._showIndexHtmlAsView(pluginId),
+      showInWorkContext: () => this._showInWorkContext(pluginId),
+      closeWorkContextView: () => this._closeWorkContextView(pluginId),
+      getActiveWorkContext: () => this.getActiveWorkContext(),
 
       // Sync
       triggerSync: () => this._triggerSync(pluginId),
@@ -463,6 +511,44 @@ export class PluginBridgeService implements OnDestroy {
     });
     // Navigate to the plugin index route
     this._router.navigate(['/plugins', pluginId, 'index']);
+  }
+
+  /**
+   * Mount this plugin's index.html inside the work-view body for the active
+   * work context. Work-view renders it in place of the task list.
+   */
+  private _showInWorkContext(pluginId: string): void {
+    this._workContextEmbedPluginId.set(pluginId);
+  }
+
+  /**
+   * Clear the work-view embed slot if this plugin currently owns it.
+   */
+  private _closeWorkContextView(pluginId: string): void {
+    if (this._workContextEmbedPluginId() === pluginId) {
+      this._workContextEmbedPluginId.set(null);
+    }
+  }
+
+  /**
+   * Snapshot of the active work context for plugins. Returns null when no
+   * context is active (e.g. user is on a settings page).
+   */
+  async getActiveWorkContext(): Promise<ActiveWorkContext | null> {
+    try {
+      const ctx = await firstValueFrom(
+        this._workContextService.activeWorkContext$.pipe(take(1)),
+      );
+      if (!ctx) return null;
+      return {
+        id: ctx.id,
+        type: ctx.type,
+        title: ctx.title,
+        taskIds: ctx.taskIds,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -995,6 +1081,7 @@ export class PluginBridgeService implements OnDestroy {
     this._removePluginHeaderButtons(pluginId);
     this._removePluginMenuEntries(pluginId);
     this._removePluginSidePanelButtons(pluginId);
+    this._removePluginWorkContextHeaderButtons(pluginId);
     this.unregisterPluginShortcuts(pluginId);
     this._configHandlers.delete(pluginId);
 
@@ -1085,6 +1172,47 @@ export class PluginBridgeService implements OnDestroy {
       pluginId,
       menuEntryCfg,
     });
+  }
+
+  /**
+   * Register a work-context-scoped header button. Visibility is controlled by
+   * the `showFor` field on cfg, evaluated against the active context's type
+   * (PROJECT/TAG) or the special TODAY tag.
+   */
+  private _registerWorkContextHeaderButton(
+    pluginId: string,
+    cfg: Omit<PluginWorkContextHeaderBtnCfg, 'pluginId'>,
+  ): void {
+    if (!cfg.label || typeof cfg.label !== 'string') {
+      throw new Error('PluginBridge: registerWorkContextHeaderButton requires label');
+    }
+    if (!cfg.onClick || typeof cfg.onClick !== 'function') {
+      throw new Error('PluginBridge: registerWorkContextHeaderButton requires onClick');
+    }
+    if (!Array.isArray(cfg.showFor) || cfg.showFor.length === 0) {
+      throw new Error(
+        'PluginBridge: registerWorkContextHeaderButton requires non-empty showFor',
+      );
+    }
+    const button: PluginWorkContextHeaderBtnCfg = { ...cfg, pluginId };
+    const current = this._workContextHeaderButtons();
+    if (current.some((b) => b.pluginId === pluginId && b.label === cfg.label)) {
+      PluginLog.warn('PluginBridge: duplicate work-context header button, skipping', {
+        pluginId,
+        label: cfg.label,
+      });
+      return;
+    }
+    this._workContextHeaderButtons.set([...current, button]);
+  }
+
+  private _removePluginWorkContextHeaderButtons(pluginId: string): void {
+    this._workContextHeaderButtons.set(
+      this._workContextHeaderButtons().filter((b) => b.pluginId !== pluginId),
+    );
+    if (this._workContextEmbedPluginId() === pluginId) {
+      this._workContextEmbedPluginId.set(null);
+    }
   }
 
   /**

@@ -86,6 +86,8 @@ import { recordSearchNavDebug } from '../../util/search-nav-debug';
 import { dragDelayForTouch } from '../../util/input-intent';
 import { DateService } from '../../core/date/date.service';
 import { DocumentViewComponent } from '../document-mode/document-view/document-view.component';
+import { PluginIndexComponent } from '../../plugins/ui/plugin-index/plugin-index.component';
+import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 
 @Component({
   selector: 'work-view',
@@ -120,6 +122,7 @@ import { DocumentViewComponent } from '../document-mode/document-view/document-v
     ScheduledDateGroupPipe,
     RepeatCfgPreviewComponent,
     DocumentViewComponent,
+    PluginIndexComponent,
   ],
 })
 export class WorkViewComponent implements OnInit, OnDestroy {
@@ -141,6 +144,7 @@ export class WorkViewComponent implements OnInit, OnDestroy {
   private _matDialog = inject(MatDialog);
   private _destroyRef = inject(DestroyRef);
   private _dateService = inject(DateService);
+  private _pluginBridge = inject(PluginBridgeService);
   protected readonly dragDelayForTouch = dragDelayForTouch;
 
   private _isDocumentModeForContext = toSignal(
@@ -155,6 +159,25 @@ export class WorkViewComponent implements OnInit, OnDestroy {
 
   isProjectContext = toSignal(this.workContextService.isActiveWorkContextProject$, {
     initialValue: false,
+  });
+
+  private _isTodayContext = toSignal(
+    this.workContextService.activeWorkContext$.pipe(
+      map((ctx) => ctx.id === TODAY_TAG.id),
+    ),
+    { initialValue: false },
+  );
+
+  /**
+   * Pluginid currently embedded in the work-view body, or null. The plugin
+   * iframe replaces the task list when set AND the active context is a
+   * project or the TODAY tag.
+   */
+  pluginEmbedId = computed(() => {
+    const id = this._pluginBridge.workContextEmbedPluginId();
+    if (!id) return null;
+    if (this.isProjectContext() || this._isTodayContext()) return id;
+    return null;
   });
 
   isFinishDayEnabled = computed(

@@ -25,6 +25,7 @@ export enum PluginHooks {
   ACTION = 'action',
   ANY_TASK_UPDATE = 'anyTaskUpdate',
   PROJECT_LIST_UPDATE = 'projectListUpdate',
+  WORK_CONTEXT_CHANGE = 'workContextChange',
 }
 
 export type Hooks = PluginHooks;
@@ -188,6 +189,23 @@ export interface ProjectListUpdatePayload {
   changes?: Partial<Project>;
 }
 
+/**
+ * Snapshot of the active work context (project or tag).
+ * Used by getActiveWorkContext() and as the WORK_CONTEXT_CHANGE payload.
+ */
+export interface ActiveWorkContext {
+  id: string;
+  type: 'PROJECT' | 'TAG';
+  title: string;
+  taskIds: string[];
+}
+
+/**
+ * Fires when the user switches between projects/tags. Payload is null when
+ * no context is active (e.g. on a non-work-view route).
+ */
+export type WorkContextChangePayload = ActiveWorkContext | null;
+
 // Map hook types to their payload types
 export interface HookPayloadMap {
   [PluginHooks.TASK_CREATED]: TaskCreatedPayload;
@@ -201,6 +219,7 @@ export interface HookPayloadMap {
   [PluginHooks.ACTION]: ActionPayload;
   [PluginHooks.ANY_TASK_UPDATE]: AnyTaskUpdatePayload;
   [PluginHooks.PROJECT_LIST_UPDATE]: ProjectListUpdatePayload;
+  [PluginHooks.WORK_CONTEXT_CHANGE]: WorkContextChangePayload;
 }
 
 // Generic hook handler with typed payload
@@ -323,6 +342,18 @@ export interface PluginSidePanelBtnCfg {
   onClick: () => void;
 }
 
+/**
+ * Header button that is only rendered when the active work context matches
+ * one of the entries in `showFor`. `'TODAY'` refers to the special TODAY tag.
+ */
+export interface PluginWorkContextHeaderBtnCfg {
+  pluginId: string;
+  label: string;
+  icon?: string;
+  onClick: (ctx: ActiveWorkContext) => void;
+  showFor: ('PROJECT' | 'TAG' | 'TODAY')[];
+}
+
 export interface OAuthFlowConfig {
   authUrl: string;
   tokenUrl: string;
@@ -381,7 +412,32 @@ export interface PluginAPI {
 
   registerSidePanelButton(sidePanelBtnCfg: Omit<PluginSidePanelBtnCfg, 'pluginId'>): void;
 
+  /**
+   * Register a header button that is only visible when the active work
+   * context matches one of the entries in `showFor`. The handler receives a
+   * snapshot of the active context.
+   */
+  registerWorkContextHeaderButton(
+    cfg: Omit<PluginWorkContextHeaderBtnCfg, 'pluginId'>,
+  ): void;
+
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
+
+  /**
+   * Returns the currently active project or tag, or null if none is active
+   * (e.g. the user is on a settings page). The TODAY tag has id `'TODAY'`.
+   */
+  getActiveWorkContext(): Promise<ActiveWorkContext | null>;
+
+  /**
+   * Mount this plugin's index.html inside the work-view body for the active
+   * work context, in place of the task list. Only takes effect when the
+   * active context is a project or the TODAY tag. Call `closeWorkContextView`
+   * to revert to the normal task-list view.
+   */
+  showInWorkContext(): void;
+
+  closeWorkContextView(): void;
 
   // cross-process communication
   onMessage?(handler: (message: unknown) => Promise<unknown> | unknown): void;
@@ -599,6 +655,9 @@ export enum PluginIframeMessageType {
   // Dialog interaction
   DIALOG_BUTTON_CLICK = 'PLUGIN_DIALOG_BUTTON_CLICK',
   DIALOG_BUTTON_RESPONSE = 'PLUGIN_DIALOG_BUTTON_RESPONSE',
+
+  // Work-context header button click forwarded to the iframe
+  WORK_CONTEXT_BTN_CLICK = 'PLUGIN_WORK_CONTEXT_BTN_CLICK',
 
   // Message forwarding
   MESSAGE = 'PLUGIN_MESSAGE',

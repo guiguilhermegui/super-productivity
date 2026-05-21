@@ -35,6 +35,7 @@ import { DataInitStateService } from '../../core/data-init/data-init-state.servi
 import { showFocusOverlay } from '../../features/focus-mode/store/focus-mode.actions';
 import { SyncStatus } from '../../op-log/sync-exports';
 import { PluginHeaderBtnsComponent } from '../../plugins/ui/plugin-header-btns.component';
+import { PluginWorkContextHeaderBtnsComponent } from '../../plugins/ui/plugin-work-context-header-btns.component';
 import { PluginSidePanelBtnsComponent } from '../../plugins/ui/plugin-side-panel-btns.component';
 import { PageTitleComponent } from './page-title/page-title.component';
 import { PlayButtonComponent } from './play-button/play-button.component';
@@ -61,6 +62,7 @@ import { FocusModeService } from '../../features/focus-mode/focus-mode.service';
     SimpleCounterButtonComponent,
     LongPressDirective,
     PluginHeaderBtnsComponent,
+    PluginWorkContextHeaderBtnsComponent,
     PluginSidePanelBtnsComponent,
     PageTitleComponent,
     PlayButtonComponent,

@@ -10,7 +10,7 @@
       class="today"
       cdkScrollable
     >
-      @if (!(isDocumentMode() && isProjectContext()) && !pluginEmbedId()) {
+      @if (!pluginEmbedId()) {
         <header class="work-view-header">
           @if (estimateRemainingToday() || workingToday()) {
             <div
@@ -84,8 +84,6 @@
           [showFullUI]="false"
           [skipCleanupOnDestroy]="true"
         ></plugin-index>
-      } @else if (isDocumentMode() && isProjectContext()) {
-        <document-view></document-view>
       } @else {
         <div class="task-list-wrapper">
           @if (!(workContextService.isHasTasksToWorkOn$ | async)) {
@@ -382,9 +380,7 @@
       }
     </div>
 
-    @if (
-      isShowBacklog() && !(isDocumentMode() && isProjectContext()) && !pluginEmbedId()
-    ) {
+    @if (isShowBacklog() && !pluginEmbedId()) {
       <div
         #splitBottomEl
         [style.user-focus]="splitInputPos === 100 ? 'none' : ''"

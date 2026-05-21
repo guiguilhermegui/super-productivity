@@ -16,7 +16,6 @@ import { TaskViewCustomizerService } from '../../../features/task-view-customize
 import { TaskViewCustomizerPanelComponent } from '../../../features/task-view-customizer/task-view-customizer-panel/task-view-customizer-panel.component';
 import { GlobalConfigService } from '../../../features/config/global-config.service';
 import { KeyboardConfig } from '../../../features/config/keyboard-config.model';
-import { DocumentModeService } from '../../../features/document-mode/document-mode.service';
 
 @Component({
   selector: 'page-title',
@@ -55,37 +54,23 @@ import { DocumentModeService } from '../../../features/document-mode/document-mo
             <mat-icon>more_vert</mat-icon>
           </button>
           @if (isWorkViewPage()) {
-            @if (!isDocumentMode()) {
-              <button
-                class="task-filter-btn"
-                [class.isCustomized]="taskViewCustomizerService.isCustomized()"
-                [matMenuTriggerFor]="customizerPanel.menu"
-                mat-icon-button
-                matTooltip="{{
-                  T.GCF.KEYBOARD.TOGGLE_TASK_VIEW_CUSTOMIZER_PANEL | translate
-                }} {{
-                  kb.toggleTaskViewCustomizerPanel
-                    ? '[' + kb.toggleTaskViewCustomizerPanel + ']'
-                    : ''
-                }}"
-              >
-                <mat-icon>filter_list</mat-icon>
-              </button>
+            <button
+              class="task-filter-btn"
+              [class.isCustomized]="taskViewCustomizerService.isCustomized()"
+              [matMenuTriggerFor]="customizerPanel.menu"
+              mat-icon-button
+              matTooltip="{{
+                T.GCF.KEYBOARD.TOGGLE_TASK_VIEW_CUSTOMIZER_PANEL | translate
+              }} {{
+                kb.toggleTaskViewCustomizerPanel
+                  ? '[' + kb.toggleTaskViewCustomizerPanel + ']'
+                  : ''
+              }}"
+            >
+              <mat-icon>filter_list</mat-icon>
+            </button>
 
-              <task-view-customizer-panel #customizerPanel></task-view-customizer-panel>
-            }
-            @if (isProjectContext() && isDocumentModeEnabled()) {
-              <button
-                class="doc-mode-btn"
-                mat-icon-button
-                (click)="documentModeService.toggleDocumentMode()"
-                [matTooltip]="
-                  isDocumentMode() ? 'Switch to list view' : 'Switch to document view'
-                "
-              >
-                <mat-icon>{{ isDocumentMode() ? 'list' : 'article' }}</mat-icon>
-              </button>
-            }
+            <task-view-customizer-panel #customizerPanel></task-view-customizer-panel>
           }
         </div>
       }
@@ -191,7 +176,6 @@ export class PageTitleComponent {
   private _router = inject(Router);
   private _workContextService = inject(WorkContextService);
   readonly taskViewCustomizerService = inject(TaskViewCustomizerService);
-  readonly documentModeService = inject(DocumentModeService);
   private readonly _configService = inject(GlobalConfigService);
   private _translateService = inject(TranslateService);
 
@@ -202,17 +186,6 @@ export class PageTitleComponent {
   activeWorkContextTypeAndId = toSignal(
     this._workContextService.activeWorkContextTypeAndId$,
   );
-  isDocumentMode = toSignal(
-    this._workContextService.activeWorkContext$.pipe(map((ctx) => !!ctx.isDocumentMode)),
-    { initialValue: false },
-  );
-  isProjectContext = toSignal(this._workContextService.isActiveWorkContextProject$, {
-    initialValue: false,
-  });
-  isDocumentModeEnabled = computed(
-    () => this._configService.appFeatures().isDocumentModeEnabled,
-  );
-
   // Single source for the current URL path — all route-derived signals compute off this.
   // Query and fragment are stripped so end-anchored matchers work for e.g. `/config#plugins`.
   private _url$ = this._router.events.pipe(

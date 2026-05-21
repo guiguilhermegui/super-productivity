@@ -85,7 +85,6 @@ import { RepeatCfgPreviewComponent } from '../task-repeat-cfg/repeat-cfg-preview
 import { recordSearchNavDebug } from '../../util/search-nav-debug';
 import { dragDelayForTouch } from '../../util/input-intent';
 import { DateService } from '../../core/date/date.service';
-import { DocumentViewComponent } from '../document-mode/document-view/document-view.component';
 import { PluginIndexComponent } from '../../plugins/ui/plugin-index/plugin-index.component';
 import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 
@@ -121,7 +120,6 @@ import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
     FinishDayBtnComponent,
     ScheduledDateGroupPipe,
     RepeatCfgPreviewComponent,
-    DocumentViewComponent,
     PluginIndexComponent,
   ],
 })
@@ -146,16 +144,6 @@ export class WorkViewComponent implements OnInit, OnDestroy {
   private _dateService = inject(DateService);
   private _pluginBridge = inject(PluginBridgeService);
   protected readonly dragDelayForTouch = dragDelayForTouch;
-
-  private _isDocumentModeForContext = toSignal(
-    this.workContextService.activeWorkContext$.pipe(map((ctx) => !!ctx.isDocumentMode)),
-    { initialValue: false },
-  );
-  isDocumentMode = computed(
-    () =>
-      this._isDocumentModeForContext() &&
-      this._globalConfigService.appFeatures().isDocumentModeEnabled,
-  );
 
   isProjectContext = toSignal(this.workContextService.isActiveWorkContextProject$, {
     initialValue: false,

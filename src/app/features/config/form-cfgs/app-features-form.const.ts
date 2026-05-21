@@ -115,14 +115,6 @@ export const APP_FEATURES_FORM_CFG: ConfigFormSection<AppFeaturesConfig> = {
       },
     },
     {
-      key: 'isDocumentModeEnabled',
-      type: 'slide-toggle',
-      templateOptions: {
-        label: T.GCF.APP_FEATURES.DOCUMENT_MODE,
-        icon: 'article',
-      },
-    },
-    {
       key: 'isEnableUserProfiles',
       type: 'slide-toggle',
       templateOptions: {

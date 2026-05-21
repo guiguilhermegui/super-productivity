@@ -55,12 +55,16 @@ export class CalendarIntegrationEffects {
    * Poll external calendar providers for events and auto-import them as tasks.
    *
    * The auto-import branch is gated on `isInitialSyncDoneSync() &&
-   * !isInSyncWindow()`. The `!isInSyncWindow()` half is what
-   * `skipDuringSyncWindow()` would give us; the `isInitialSyncDoneSync()`
-   * half is stricter — it also blocks before the very first sync completes,
-   * which the operator alone does not cover. The combined gate can't be
-   * lifted to the outer pipe because the banner-display branch must keep
-   * firing during sync.
+   * !isInSyncWindow()` — the same predicate as `skipDuringSyncWindow()`
+   * (see `src/app/util/skip-during-sync-window.operator.ts`). We hand-roll
+   * it here rather than using the operator because:
+   *   1. The operator filters emissions on a stream; this effect runs its
+   *      side effects inside `tap(async () => …)`, not on an emission.
+   *   2. The banner-display branch (further down in the same tap) must
+   *      keep firing during sync, so the gate cannot be lifted to the
+   *      outer pipe.
+   * Refactoring the tap into `exhaustMap(...) → skipDuringSyncWindow() →
+   * tap(import)` would let the operator be reused; left as a follow-up.
    *
    * Why the gate matters: calendar task IDs are deterministic across devices
    * (see `generateCalendarTaskId`), so a pre-first-sync import on a second

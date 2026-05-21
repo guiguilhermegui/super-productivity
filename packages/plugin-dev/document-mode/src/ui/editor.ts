@@ -659,6 +659,46 @@ type PMNode = {
  * content-bearing schema can load them. Idempotent — nodes that already
  * have content are left alone.
  */
+/**
+ * After loading a stored doc (which may have been saved before subtasks were
+ * supported), walk the top-level content and insert any subTaskRefs from the
+ * host that aren't already present right after their parent taskRef.
+ * Idempotent — existing subtask blocks are preserved in order.
+ */
+const ensureSubtasksInJSON = (doc: unknown): unknown => {
+  const root = doc as PMNode;
+  if (!root || root.type !== 'doc' || !Array.isArray(root.content)) return doc;
+  const src = root.content as (PMNode | PMText)[];
+  const out: (PMNode | PMText)[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const node = src[i];
+    out.push(node);
+    if ((node as PMNode).type === 'taskRef') {
+      const parentId = ((node as PMNode).attrs?.taskId as string) || '';
+      const parent = taskCache.get(parentId);
+      const existing = new Set<string>();
+      let j = i + 1;
+      while (j < src.length && (src[j] as PMNode).type === 'subTaskRef') {
+        out.push(src[j]);
+        existing.add(((src[j] as PMNode).attrs?.taskId as string) || '');
+        j++;
+      }
+      if (parent?.subTaskIds) {
+        for (const subId of parent.subTaskIds) {
+          if (subId && !existing.has(subId)) {
+            out.push(taskNodeJSON(subId, 'subTaskRef') as PMNode);
+          }
+        }
+      }
+      i = j;
+    } else {
+      i++;
+    }
+  }
+  return { ...root, content: out };
+};
+
 const migrateStoredDoc = (raw: unknown): unknown => {
   const visit = (node: PMNode | PMText | undefined): PMNode | PMText | undefined => {
     if (!node || typeof node !== 'object') return node;
@@ -711,7 +751,9 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
   await refreshTaskCache();
 
   const stored = storedState.docs[ctx.id];
-  const docJson = stored ? migrateStoredDoc(stored) : buildSeedDoc(ctx);
+  const docJson = stored
+    ? ensureSubtasksInJSON(migrateStoredDoc(stored))
+    : buildSeedDoc(ctx);
   try {
     editor.commands.setContent(
       docJson as Parameters<typeof editor.commands.setContent>[0],

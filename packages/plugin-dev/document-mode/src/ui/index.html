@@ -3,10 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <title>Document Mode</title>
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/icon?family=Material+Icons"
-    />
     <style>
       html,
       body {
@@ -19,9 +15,13 @@
         font-size: 16px;
         line-height: 1.5;
       }
-      .material-icons {
-        font-size: 18px;
-        line-height: 1;
+      .doc-icon {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        fill: currentColor;
+        display: inline-block;
+        vertical-align: middle;
       }
 
       #editor-root {
@@ -186,11 +186,40 @@
         background: var(--select-hover-bg, rgba(0, 0, 0, 0.06));
         color: var(--text-color, #222);
       }
-      .block-gutter-btn .material-icons {
-        font-size: 18px;
+      .block-gutter-btn .doc-icon {
+        width: 18px;
+        height: 18px;
       }
       .block-gutter-btn[data-action='grip'] {
         cursor: grab;
+      }
+      .block-gutter-btn[data-action='grip']:active {
+        cursor: grabbing;
+      }
+
+      /* Block currently being dragged (HTML5 drag) */
+      .ProseMirror > .is-dragging {
+        opacity: 0.4;
+      }
+
+      /* Drop-zone indicator between blocks during drag */
+      .doc-drop-indicator {
+        position: absolute;
+        height: 2px;
+        background: var(--c-accent, #3a85f0);
+        border-radius: 1px;
+        pointer-events: none;
+        z-index: 95;
+      }
+      .doc-drop-indicator::before {
+        content: '';
+        position: absolute;
+        left: -3px;
+        top: -3px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--c-accent, #3a85f0);
       }
 
       /* Slash menu / block menu */
@@ -220,8 +249,8 @@
       }
       .slash-menu-icon {
         color: var(--text-color-less-intense, #666);
-        font-size: 18px;
-        line-height: 1;
+        width: 18px;
+        height: 18px;
         flex-shrink: 0;
       }
       .slash-menu-label {

@@ -589,6 +589,42 @@ const onAnyTaskUpdate = (payload: AnyTaskUpdatePayload): void => {
 };
 
 /* -------------------------------------------------------------------------- */
+/* Icons (inline SVG — no Google Fonts dependency)                             */
+/* -------------------------------------------------------------------------- */
+
+// Standard Material Symbols 24×24 outline paths. Kept as a static map so the
+// iframe renders icons offline without loading the Material Icons web font.
+const ICON_PATHS: Record<string, string> = {
+  add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+  drag_indicator:
+    'M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z',
+  arrow_upward: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
+  arrow_downward: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
+  content_copy:
+    'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
+  delete: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+  segment: 'M9 18h12v-2H9v2zM3 6v2h18V6H3zm6 7h12v-2H9v2z',
+  title: 'M5 4v3h5.5v12h3V7H19V4z',
+  text_fields: 'M2.5 4v3h5v12h3V7h5V4h-13zm19 5h-9v3h3v7h3v-7h3V9z',
+  short_text: 'M4 9h16v2H4zm0 4h10v2H4z',
+  format_list_bulleted:
+    'M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z',
+  format_list_numbered:
+    'M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm1-9h1V4H2v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 10.9V10H2v1zm5-6v2h14V5H7zm0 14h14v-2H7v2zm0-6h14v-2H7v2z',
+  format_quote: 'M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z',
+  code: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
+  horizontal_rule: 'M4 11h16v2H4z',
+  check_circle_outline:
+    'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-7.7L7.7 10.7l-1.4 1.4L10 15.8l8-8-1.4-1.4z',
+};
+
+const iconSvg = (name: string, extraClass = ''): string => {
+  const path = ICON_PATHS[name] ?? '';
+  const cls = extraClass ? `doc-icon ${extraClass}` : 'doc-icon';
+  return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${path}"/></svg>`;
+};
+
+/* -------------------------------------------------------------------------- */
 /* Slash menu + block menu (Notion-style)                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -679,31 +715,46 @@ const closeMenu = (): void => {
   menuCurrentItems = [];
 };
 
+/**
+ * Position a popover relative to an anchor rect. Default opens below; flips
+ * above when there isn't room. Set styles BEFORE measuring offsetHeight so
+ * the first paint is at the final spot (no visual flicker).
+ */
+const positionPopover = (el: HTMLElement, rect: DOMRect): void => {
+  el.style.left = `${rect.left}px`;
+  el.style.top = `${rect.bottom + 4}px`;
+  el.style.visibility = 'hidden';
+  document.body.appendChild(el);
+  const h = el.offsetHeight;
+  const overflowsBelow = rect.bottom + 4 + h > window.innerHeight;
+  const fitsAbove = rect.top - 4 - h > 0;
+  if (overflowsBelow && fitsAbove) {
+    el.style.top = `${rect.top - 4 - h}px`;
+  }
+  el.style.visibility = '';
+};
+
 const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
   if (menuEl) menuEl.remove();
   menuCurrentItems = items;
   if (items.length === 0) {
     menuEl = document.createElement('div');
     menuEl.className = 'slash-menu';
-    menuEl.style.top = `${rect.bottom + 4}px`;
-    menuEl.style.left = `${rect.left}px`;
     const empty = document.createElement('div');
     empty.className = 'slash-menu-empty';
     empty.textContent = 'No matches';
     menuEl.appendChild(empty);
-    document.body.appendChild(menuEl);
+    positionPopover(menuEl, rect);
     return;
   }
   menuEl = document.createElement('div');
   menuEl.className = 'slash-menu';
-  menuEl.style.top = `${rect.bottom + 4}px`;
-  menuEl.style.left = `${rect.left}px`;
   items.forEach((item, idx) => {
     const el = document.createElement('div');
     el.className = 'slash-menu-item';
     if (idx === menuActiveIndex) el.classList.add('is-active');
     el.innerHTML = `
-      <span class="material-icons slash-menu-icon">${item.icon}</span>
+      ${iconSvg(item.icon, 'slash-menu-icon')}
       <span class="slash-menu-label">${item.label}</span>
       ${item.hint ? `<span class="slash-menu-hint">${item.hint}</span>` : ''}
     `;
@@ -720,7 +771,7 @@ const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
     });
     menuEl!.appendChild(el);
   });
-  document.body.appendChild(menuEl);
+  positionPopover(menuEl, rect);
 };
 
 const showSlashMenu = (): void => {
@@ -749,6 +800,42 @@ let gutterEl: HTMLDivElement | null = null;
 let hoveredBlock: HTMLElement | null = null;
 let hideGutterTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Drag-and-drop state for grip-based block reordering.
+let draggingNodePos: number | null = null;
+let dropIndicatorEl: HTMLDivElement | null = null;
+let dropTargetIdx: number | null = null;
+
+const ensureDropIndicator = (): HTMLDivElement => {
+  if (dropIndicatorEl) return dropIndicatorEl;
+  dropIndicatorEl = document.createElement('div');
+  dropIndicatorEl.className = 'doc-drop-indicator';
+  dropIndicatorEl.style.display = 'none';
+  document.body.appendChild(dropIndicatorEl);
+  return dropIndicatorEl;
+};
+
+const positionDropIndicator = (y: number, x: number, width: number): void => {
+  const el = ensureDropIndicator();
+  el.style.display = 'block';
+  el.style.top = `${y + window.scrollY}px`;
+  el.style.left = `${x + window.scrollX}px`;
+  el.style.width = `${width}px`;
+};
+
+const hideDropIndicator = (): void => {
+  if (dropIndicatorEl) dropIndicatorEl.style.display = 'none';
+};
+
+const endBlockDrag = (): void => {
+  if (editor) {
+    const dragged = editor.view.dom.querySelector('.is-dragging');
+    if (dragged) dragged.classList.remove('is-dragging');
+  }
+  draggingNodePos = null;
+  dropTargetIdx = null;
+  hideDropIndicator();
+};
+
 const scheduleHideGutter = (): void => {
   if (hideGutterTimer) clearTimeout(hideGutterTimer);
   hideGutterTimer = setTimeout(() => {
@@ -769,10 +856,10 @@ const createGutter = (): HTMLDivElement => {
   g.className = 'block-gutter';
   g.innerHTML = `
     <button class="block-gutter-btn" data-action="add" title="Insert below">
-      <span class="material-icons">add</span>
+      ${iconSvg('add')}
     </button>
     <button class="block-gutter-btn" data-action="grip" title="Drag to move; click for menu" draggable="true">
-      <span class="material-icons">drag_indicator</span>
+      ${iconSvg('drag_indicator')}
     </button>
   `;
   g.style.display = 'none';
@@ -817,6 +904,28 @@ const createGutter = (): HTMLDivElement => {
       const rect = (grip as HTMLElement).getBoundingClientRect();
       openBlockMenu(rect);
     });
+    grip.addEventListener('dragstart', (ev) => {
+      if (!hoveredBlock || !editor) {
+        ev.preventDefault();
+        return;
+      }
+      const pos = editor.view.posAtDOM(hoveredBlock, 0);
+      const resolved = editor.state.doc.resolve(pos);
+      draggingNodePos = resolved.before(resolved.depth);
+      if (ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = 'move';
+        // Some browsers require data on dragstart to actually start the drag.
+        ev.dataTransfer.setData('text/plain', 'doc-mode-block');
+        // Use the hovered block itself as the drag image for visual feedback.
+        ev.dataTransfer.setDragImage(hoveredBlock, 10, 10);
+      }
+      hoveredBlock.classList.add('is-dragging');
+      // Hide gutter so it doesn't steal pointer events during drag.
+      if (gutterEl) gutterEl.style.display = 'none';
+    });
+    grip.addEventListener('dragend', () => {
+      endBlockDrag();
+    });
   }
 
   return g;
@@ -853,12 +962,52 @@ const findBlockFromEvent = (ev: MouseEvent): HTMLElement | null => {
   return node && node.parentElement === root ? node : null;
 };
 
+/**
+ * Move a top-level block to a target slot index. `targetIdx` is interpreted as
+ * the insertion gap (0 = before first child, doc.childCount = after last).
+ * No-op when the target maps to the block's current slot.
+ */
+const moveBlockToIndex = (fromPos: number, targetIdx: number): void => {
+  if (!editor) return;
+  const ed = editor;
+  const doc = ed.state.doc;
+  const node = doc.nodeAt(fromPos);
+  if (!node) return;
+  const fromIdx = doc.resolve(fromPos).index(0);
+  if (targetIdx === fromIdx || targetIdx === fromIdx + 1) return;
+
+  let insertPos = 0;
+  for (let i = 0; i < targetIdx && i < doc.childCount; i++) {
+    insertPos += doc.child(i).nodeSize;
+  }
+  // After deletion, positions past fromPos shift left by node.nodeSize.
+  const adjustedInsert = insertPos > fromPos ? insertPos - node.nodeSize : insertPos;
+
+  const tr = ed.state.tr;
+  tr.delete(fromPos, fromPos + node.nodeSize);
+  tr.insert(adjustedInsert, node);
+  tr.setSelection(NodeSelection.create(tr.doc, adjustedInsert));
+  ed.view.dispatch(tr.scrollIntoView());
+  ed.view.focus();
+};
+
+const moveBlock = (nodePos: number, direction: 'up' | 'down'): void => {
+  if (!editor) return;
+  const idx = editor.state.doc.resolve(nodePos).index(0);
+  // 'up' = insert before previous sibling; 'down' = insert after next sibling.
+  moveBlockToIndex(nodePos, direction === 'up' ? idx - 1 : idx + 2);
+};
+
 const openBlockMenu = (anchorRect: DOMRect): void => {
   if (!editor || !hoveredBlock) return;
   const ed = editor;
   const pos = ed.view.posAtDOM(hoveredBlock, 0);
   const $pos = ed.state.doc.resolve(pos);
   const nodePos = $pos.before($pos.depth);
+  const blockIdx = $pos.index(0);
+  const childCount = ed.state.doc.childCount;
+  const canMoveUp = blockIdx > 0;
+  const canMoveDown = blockIdx < childCount - 1;
 
   const items: MenuItem[] = [
     {
@@ -884,6 +1033,24 @@ const openBlockMenu = (anchorRect: DOMRect): void => {
       action: () =>
         ed.chain().focus().setNodeSelection(nodePos).setHeading({ level: 3 }).run(),
     },
+  ];
+
+  if (canMoveUp) {
+    items.push({
+      label: 'Move up',
+      icon: 'arrow_upward',
+      action: () => moveBlock(nodePos, 'up'),
+    });
+  }
+  if (canMoveDown) {
+    items.push({
+      label: 'Move down',
+      icon: 'arrow_downward',
+      action: () => moveBlock(nodePos, 'down'),
+    });
+  }
+
+  items.push(
     {
       label: 'Duplicate',
       icon: 'content_copy',
@@ -903,7 +1070,7 @@ const openBlockMenu = (anchorRect: DOMRect): void => {
         ed.chain().focus().setNodeSelection(nodePos).deleteSelection().run();
       },
     },
-  ];
+  );
 
   menuActiveIndex = 0;
   menuFilter = '';
@@ -991,6 +1158,50 @@ const mount = async (): Promise<void> => {
     const next = ev.relatedTarget as HTMLElement | null;
     if (next && (root.contains(next) || gutterEl?.contains(next))) return;
     scheduleHideGutter();
+  });
+
+  // Drag-and-drop for block reordering. The grip sets draggingNodePos on
+  // dragstart; we listen on the editor root for dragover/drop, compute the
+  // insertion slot from the cursor's y position, and dispatch a move on drop.
+  root.addEventListener('dragover', (ev) => {
+    if (draggingNodePos === null || !editor) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    const editorRoot = editor.view.dom as HTMLElement;
+    const blocks = Array.from(editorRoot.children) as HTMLElement[];
+    if (blocks.length === 0) return;
+    const y = ev.clientY;
+    let targetIdx = blocks.length;
+    let indicatorY = 0;
+    const rootRect = editorRoot.getBoundingClientRect();
+    for (let i = 0; i < blocks.length; i++) {
+      const r = blocks[i].getBoundingClientRect();
+      const mid = r.top + r.height / 2;
+      if (y < mid) {
+        targetIdx = i;
+        indicatorY = r.top;
+        break;
+      }
+      indicatorY = r.bottom;
+    }
+    dropTargetIdx = targetIdx;
+    positionDropIndicator(indicatorY, rootRect.left, rootRect.width);
+  });
+  root.addEventListener('drop', (ev) => {
+    if (draggingNodePos === null || dropTargetIdx === null) {
+      endBlockDrag();
+      return;
+    }
+    ev.preventDefault();
+    const from = draggingNodePos;
+    const target = dropTargetIdx;
+    endBlockDrag();
+    moveBlockToIndex(from, target);
+  });
+  // dragend on the source may not fire if the drop landed outside; listen on
+  // window as a safety net.
+  window.addEventListener('dragend', () => {
+    if (draggingNodePos !== null) endBlockDrag();
   });
 
   editor.view.dom.addEventListener('keydown', (ev: KeyboardEvent) => {

@@ -5,8 +5,7 @@
  * and a custom taskRef atom node tied to Super Productivity tasks.
  */
 
-import { Editor, Node, mergeAttributes } from '@tiptap/core';
-import type { NodeViewRendererProps } from '@tiptap/core';
+import { Editor } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { NodeSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
@@ -20,11 +19,36 @@ import {
   type Task,
   type WorkContextChangePayload,
 } from '@super-productivity/plugin-api';
+import {
+  buildSeedDoc,
+  prepareStoredDoc,
+  snapshotInContextTaskIds,
+  taskNodeJSON,
+  taskRefWithSubtasksJSON,
+  type TaskLookup,
+} from '../doc-transform';
+import { iconSvg } from './icons';
+import * as docNav from './doc-nav';
+import { createTaskRefNode, type TaskRefNodeDeps } from './task-ref-node';
 
 declare const PluginAPI: PluginAPI;
 
-const SAVE_DEBOUNCE_MS = 5_000;
+// Save cadence. This is a *throttle*, not a debounce: the host tears the
+// embed iframe down on every work-context switch, so a save deferred until
+// the user goes idle (or until teardown) routinely never runs. Committing
+// every SAVE_THROTTLE_MS while editing keeps the doc blob fresh in host
+// storage while the iframe is still alive. Kept above the host's 1 s
+// persist rate limit (MIN_PLUGIN_PERSIST_INTERVAL_MS) so saves aren't
+// rejected.
+const SAVE_THROTTLE_MS = 2_000;
 const STORAGE_VERSION = 1;
+
+// Action type the host emits for an in-place single-task update (NgRx
+// `createActionGroup`, source 'Task Shared'). `onAnyTaskUpdate` uses it to
+// fast-path the common edit case past a full `getTasks()` round-trip. A
+// drift in this string degrades safely — the fast path is skipped and the
+// always-correct full refresh runs instead.
+const UPDATE_TASK_ACTION = '[Task Shared] Update Task';
 
 interface StoredState {
   version: number;
@@ -35,6 +59,12 @@ interface StoredState {
 let currentCtx: ActiveWorkContext | null = null;
 let storedState: StoredState = { version: STORAGE_VERSION, docs: {} };
 let taskCache = new Map<string, Task>();
+/**
+ * Stable task lookup handed to the pure `doc-transform` helpers. Defined as
+ * an arrow (not `taskCache.get.bind`) so it always reads the *current*
+ * `taskCache` binding — `refreshTaskCache` reassigns the Map wholesale.
+ */
+const lookupTask: TaskLookup = (id) => taskCache.get(id);
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let editor: Editor | null = null;
 let isLoadingDoc = false;
@@ -162,465 +192,6 @@ const createSubTaskAfter = async (
   }
 };
 
-/**
- * Walk doc backwards from a position to find which top-level taskRef owns
- * the subtask that lives at that position. Returns its taskId, or null
- * if there is no owning parent (orphan subTaskRef).
- *
- * Uses manual childCount iteration rather than `doc.resolve(pos).index(0)`
- * — the latter's gap-vs-node semantics at top-level boundaries differ
- * subtly across the docs and at least one reviewer flagged it as
- * mis-resolving for certain positions. Iterating cursors is provably
- * correct and runs in O(childCount) which is fine for our doc sizes.
- */
-const findParentTaskIdBefore = (subTaskRefPos: number): string | null => {
-  if (!editor) return null;
-  const doc = editor.state.doc;
-  let subIdx = -1;
-  let cursor = 0;
-  for (let i = 0; i < doc.childCount; i++) {
-    if (cursor === subTaskRefPos) {
-      subIdx = i;
-      break;
-    }
-    cursor += doc.child(i).nodeSize;
-  }
-  if (subIdx < 0) return null;
-  for (let i = subIdx - 1; i >= 0; i--) {
-    const child = doc.child(i);
-    if (child.type.name === 'taskRef') {
-      return (child.attrs.taskId as string) || null;
-    }
-    if (child.type.name === 'subTaskRef') continue;
-    return null;
-  }
-  return null;
-};
-
-/**
- * Given a taskRef's nodePos, return the doc position immediately after the
- * parent's whole "group" — past the parent and any subTaskRefs that follow
- * it. Used so that Enter at the end of a parent inserts the next sibling
- * after its subtasks, not between parent and first child.
- */
-const positionAfterParentGroup = (parentNodePos: number): number => {
-  if (!editor) return parentNodePos;
-  const doc = editor.state.doc;
-  let cursor = 0;
-  for (let i = 0; i < doc.childCount; i++) {
-    const child = doc.child(i);
-    if (cursor === parentNodePos && child.type.name === 'taskRef') {
-      let end = cursor + child.nodeSize;
-      let j = i + 1;
-      while (j < doc.childCount && doc.child(j).type.name === 'subTaskRef') {
-        end += doc.child(j).nodeSize;
-        j++;
-      }
-      return end;
-    }
-    cursor += child.nodeSize;
-  }
-  return parentNodePos;
-};
-
-const TaskRefNode = Node.create({
-  name: 'taskRef',
-  group: 'block',
-  content: 'inline*',
-  selectable: true,
-  draggable: true,
-  addKeyboardShortcuts() {
-    const inTaskRef = (): null | {
-      from: number;
-      to: number;
-      atStart: boolean;
-      atEnd: boolean;
-      isEmpty: boolean;
-      taskId: string;
-      nodePos: number;
-      nodeSize: number;
-    } => {
-      if (!editor) return null;
-      const { $from } = editor.state.selection;
-      if ($from.parent.type.name !== 'taskRef') return null;
-      const node = $from.parent;
-      const nodePos = $from.before($from.depth);
-      return {
-        from: $from.parentOffset,
-        to: $from.parentOffset,
-        atStart: $from.parentOffset === 0,
-        atEnd: $from.parentOffset === node.content.size,
-        isEmpty: node.content.size === 0,
-        taskId: node.attrs.taskId as string,
-        nodePos,
-        nodeSize: node.nodeSize,
-      };
-    };
-
-    return {
-      Enter: () => {
-        const info = inTaskRef();
-        if (!info) return false;
-        if (info.isEmpty) {
-          // Empty chip + Enter → convert to paragraph + delete the empty task.
-          if (info.taskId) void deleteTaskTolerant(info.taskId);
-          if (!editor) return false;
-          editor
-            .chain()
-            .focus()
-            .setNodeSelection(info.nodePos)
-            .setParagraph()
-            // Drop the NodeSelection: leave a text cursor inside the new
-            // paragraph so a follow-up Enter behaves normally (NodeSelection
-            // on the same block would route Enter through a different path).
-            .setTextSelection(info.nodePos + 1)
-            .run();
-          return true;
-        }
-        if (info.atEnd) {
-          // Enter at end of chip → new empty task below. Skip past any
-          // subtasks of this task so the new sibling lands after the group.
-          const insertAfter = positionAfterParentGroup(info.nodePos);
-          void createTaskAfter(insertAfter);
-          return true;
-        }
-        // Enter in the middle: swallow for POC (avoid splitting chip into
-        // two with the same taskId). Could split + create new task in v2.
-        return true;
-      },
-      Backspace: () => {
-        const info = inTaskRef();
-        if (!info) return false;
-        if (!info.atStart) return false;
-        if (info.isEmpty) {
-          // Empty chip + Backspace at start → delete task + remove chip.
-          if (info.taskId) void deleteTaskTolerant(info.taskId);
-          if (!editor) return false;
-          editor.chain().focus().setNodeSelection(info.nodePos).deleteSelection().run();
-          return true;
-        }
-        // Non-empty chip + Backspace at start: suppress default to avoid
-        // merging the chip's content into the previous block (which would
-        // detach the title from the task).
-        return true;
-      },
-    };
-  },
-  addAttributes() {
-    return {
-      taskId: { default: '' },
-      isDone: {
-        default: false,
-        parseHTML: (el: HTMLElement) => el.getAttribute('data-done') === 'true',
-        renderHTML: (attrs) => ({ 'data-done': attrs.isDone ? 'true' : 'false' }),
-      },
-    };
-  },
-  parseHTML() {
-    return [
-      {
-        tag: 'div[data-task-ref]',
-        getAttrs: (el: HTMLElement | string) => {
-          if (typeof el === 'string') return false;
-          return {
-            taskId: el.getAttribute('data-task-id') || '',
-            isDone: el.getAttribute('data-done') === 'true',
-          };
-        },
-      },
-    ];
-  },
-  renderHTML({ HTMLAttributes }) {
-    return [
-      'div',
-      mergeAttributes(HTMLAttributes, {
-        'data-task-ref': '',
-        'data-task-id': HTMLAttributes.taskId,
-        class: 'task-ref',
-      }),
-      0,
-    ];
-  },
-  addNodeView() {
-    return ({ node, editor: viewEditor, getPos }: NodeViewRendererProps) => {
-      const dom = document.createElement('div');
-      dom.className = 'task-ref';
-      dom.dataset.taskRef = '';
-      dom.dataset.taskId = node.attrs.taskId;
-
-      // Done-toggle: matches the app's <done-toggle> — a faint outline
-      // circle with an animated checkmark that fades in once done.
-      const toggle = document.createElement('span');
-      toggle.className = 'done-toggle';
-      toggle.contentEditable = 'false';
-      toggle.setAttribute('role', 'checkbox');
-      toggle.setAttribute('tabindex', '-1');
-      // Squircle (rounded square) — matches the shape used in the app, not a circle.
-      toggle.innerHTML = `
-        <svg class="done-toggle-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect class="done-circle" x="3" y="3" width="18" height="18" rx="5" ry="5"></rect>
-          <polyline class="done-check" points="6,12 10.5,16.5 18,8"></polyline>
-        </svg>
-      `;
-
-      const title = document.createElement('span');
-      title.className = 'title';
-
-      const applyState = (n: ProseMirrorNode): void => {
-        const taskId = n.attrs.taskId as string;
-        const task = taskCache.get(taskId);
-        if (!task) {
-          dom.classList.add('is-missing');
-          dom.classList.remove('is-done');
-          toggle.setAttribute('aria-checked', 'false');
-          toggle.setAttribute('aria-disabled', 'true');
-        } else {
-          dom.classList.remove('is-missing');
-          // Trust task.isDone (the host's source of truth) — the attr is
-          // optimistic and only useful for the undo stack. Using OR would
-          // keep "done" stuck visually if the host clears it but the doc
-          // node's attr hasn't been refreshed (e.g. while focused).
-          const done = !!task.isDone;
-          dom.classList.toggle('is-done', done);
-          toggle.setAttribute('aria-checked', done ? 'true' : 'false');
-          toggle.removeAttribute('aria-disabled');
-        }
-      };
-
-      const onToggle = (ev: Event): void => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const taskId = node.attrs.taskId as string;
-        const task = taskCache.get(taskId);
-        if (!task) return;
-        const next = !task.isDone;
-        PluginAPI.updateTask(taskId, { isDone: next }).catch((err) => {
-          logErr('updateTask failed', err);
-        });
-        taskCache.set(taskId, { ...task, isDone: next });
-        // Reflect on attr so undo stack carries it.
-        const pos = typeof getPos === 'function' ? getPos() : null;
-        if (pos !== null && pos !== undefined) {
-          const tr = viewEditor.state.tr.setNodeAttribute(pos, 'isDone', next);
-          viewEditor.view.dispatch(tr);
-        } else {
-          applyState(node);
-        }
-      };
-      toggle.addEventListener('mousedown', onToggle);
-
-      dom.appendChild(toggle);
-      dom.appendChild(title);
-      applyState(node);
-
-      return {
-        dom,
-        contentDOM: title,
-        update: (updatedNode: ProseMirrorNode): boolean => {
-          if (updatedNode.type.name !== 'taskRef') return false;
-          if (updatedNode.attrs.taskId !== node.attrs.taskId) return false;
-          applyState(updatedNode);
-          return true;
-        },
-      };
-    };
-  },
-});
-
-/**
- * Subtask variant of taskRef. Same content/attrs/parse/render plumbing but
- * lives at indent depth — its NodeView adds `.sub-task-ref` so CSS shifts
- * it right, and Enter/Backspace behaviours target the subtask's parent
- * instead of the top level.
- */
-const SubTaskRefNode = Node.create({
-  name: 'subTaskRef',
-  group: 'block',
-  content: 'inline*',
-  selectable: true,
-  draggable: true,
-  addKeyboardShortcuts() {
-    const inSubTaskRef = (): null | {
-      atStart: boolean;
-      atEnd: boolean;
-      isEmpty: boolean;
-      taskId: string;
-      nodePos: number;
-      nodeSize: number;
-    } => {
-      if (!editor) return null;
-      const { $from } = editor.state.selection;
-      if ($from.parent.type.name !== 'subTaskRef') return null;
-      const node = $from.parent;
-      const nodePos = $from.before($from.depth);
-      return {
-        atStart: $from.parentOffset === 0,
-        atEnd: $from.parentOffset === node.content.size,
-        isEmpty: node.content.size === 0,
-        taskId: node.attrs.taskId as string,
-        nodePos,
-        nodeSize: node.nodeSize,
-      };
-    };
-
-    return {
-      Enter: () => {
-        const info = inSubTaskRef();
-        if (!info) return false;
-        if (info.isEmpty) {
-          // Empty subtask + Enter → outdent to paragraph + delete the empty task.
-          if (info.taskId) void deleteTaskTolerant(info.taskId);
-          if (!editor) return false;
-          editor
-            .chain()
-            .focus()
-            .setNodeSelection(info.nodePos)
-            .setParagraph()
-            .setTextSelection(info.nodePos + 1)
-            .run();
-          return true;
-        }
-        if (info.atEnd) {
-          // Enter at end of subtask → create another subtask under same parent.
-          const parentTaskId = findParentTaskIdBefore(info.nodePos);
-          if (!parentTaskId) return false;
-          const insertAfter = info.nodePos + info.nodeSize;
-          void createSubTaskAfter(insertAfter, parentTaskId);
-          return true;
-        }
-        // Middle: swallow to avoid splitting a chip into two with the same taskId.
-        return true;
-      },
-      Backspace: () => {
-        const info = inSubTaskRef();
-        if (!info) return false;
-        if (!info.atStart) return false;
-        if (info.isEmpty) {
-          if (info.taskId) void deleteTaskTolerant(info.taskId);
-          if (!editor) return false;
-          editor.chain().focus().setNodeSelection(info.nodePos).deleteSelection().run();
-          return true;
-        }
-        return true;
-      },
-    };
-  },
-  addAttributes() {
-    return {
-      taskId: { default: '' },
-      isDone: {
-        default: false,
-        parseHTML: (el: HTMLElement) => el.getAttribute('data-done') === 'true',
-        renderHTML: (attrs) => ({ 'data-done': attrs.isDone ? 'true' : 'false' }),
-      },
-    };
-  },
-  parseHTML() {
-    return [
-      {
-        tag: 'div[data-sub-task-ref]',
-        getAttrs: (el: HTMLElement | string) => {
-          if (typeof el === 'string') return false;
-          return {
-            taskId: el.getAttribute('data-task-id') || '',
-            isDone: el.getAttribute('data-done') === 'true',
-          };
-        },
-      },
-    ];
-  },
-  renderHTML({ HTMLAttributes }) {
-    return [
-      'div',
-      mergeAttributes(HTMLAttributes, {
-        'data-sub-task-ref': '',
-        'data-task-id': HTMLAttributes.taskId,
-        class: 'task-ref sub-task-ref',
-      }),
-      0,
-    ];
-  },
-  addNodeView() {
-    return ({ node, editor: viewEditor, getPos }: NodeViewRendererProps) => {
-      const dom = document.createElement('div');
-      dom.className = 'task-ref sub-task-ref';
-      dom.dataset.subTaskRef = '';
-      dom.dataset.taskId = node.attrs.taskId;
-
-      const toggle = document.createElement('span');
-      toggle.className = 'done-toggle';
-      toggle.contentEditable = 'false';
-      toggle.setAttribute('role', 'checkbox');
-      toggle.setAttribute('tabindex', '-1');
-      toggle.innerHTML = `
-        <svg class="done-toggle-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect class="done-circle" x="3" y="3" width="18" height="18" rx="5" ry="5"></rect>
-          <polyline class="done-check" points="6,12 10.5,16.5 18,8"></polyline>
-        </svg>
-      `;
-
-      const title = document.createElement('span');
-      title.className = 'title';
-
-      const applyState = (n: ProseMirrorNode): void => {
-        const taskId = n.attrs.taskId as string;
-        const task = taskCache.get(taskId);
-        if (!task) {
-          dom.classList.add('is-missing');
-          dom.classList.remove('is-done');
-          toggle.setAttribute('aria-checked', 'false');
-          toggle.setAttribute('aria-disabled', 'true');
-        } else {
-          dom.classList.remove('is-missing');
-          // Trust task.isDone (the host's source of truth) — the attr is
-          // optimistic and only useful for the undo stack. Using OR would
-          // keep "done" stuck visually if the host clears it but the doc
-          // node's attr hasn't been refreshed (e.g. while focused).
-          const done = !!task.isDone;
-          dom.classList.toggle('is-done', done);
-          toggle.setAttribute('aria-checked', done ? 'true' : 'false');
-          toggle.removeAttribute('aria-disabled');
-        }
-      };
-
-      toggle.addEventListener('mousedown', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const taskId = node.attrs.taskId as string;
-        const task = taskCache.get(taskId);
-        if (!task) return;
-        const next = !task.isDone;
-        PluginAPI.updateTask(taskId, { isDone: next }).catch((err) => {
-          logErr('updateTask failed', err);
-        });
-        taskCache.set(taskId, { ...task, isDone: next });
-        const pos = typeof getPos === 'function' ? getPos() : null;
-        if (pos !== null && pos !== undefined) {
-          const tr = viewEditor.state.tr.setNodeAttribute(pos, 'isDone', next);
-          viewEditor.view.dispatch(tr);
-        } else {
-          applyState(node);
-        }
-      });
-
-      dom.appendChild(toggle);
-      dom.appendChild(title);
-      applyState(node);
-
-      return {
-        dom,
-        contentDOM: title,
-        update: (updatedNode: ProseMirrorNode): boolean => {
-          if (updatedNode.type.name !== 'subTaskRef') return false;
-          if (updatedNode.attrs.taskId !== node.attrs.taskId) return false;
-          applyState(updatedNode);
-          return true;
-        },
-      };
-    };
-  },
-});
-
 /* -------------------------------------------------------------------------- */
 /* Persistence                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -684,250 +255,65 @@ const flushSave = async (): Promise<void> => {
   }
 };
 
+/**
+ * Teardown-safe save. The work-context embed iframe is destroyed
+ * *synchronously* whenever the active context changes (the host's work-view
+ * drops `<plugin-index>` from the DOM while the context is switching), so the
+ * async `flushSave` is unusable on the way out: its `await readBlob()` never
+ * receives a reply — the iframe is gone before the host responds — and the
+ * `persistDataSynced` call after it never runs. The doc blob is then lost, and
+ * because top-level chips are rebuilt from the host's task list on reload, the
+ * loss only shows as vanished *text* blocks (paragraphs, headings, dividers).
+ *
+ * This variant skips the round-trip: it builds the blob from the in-memory
+ * `storedState` and dispatches `persistDataSynced` synchronously, so the
+ * postMessage leaves the iframe before it dies.
+ *
+ * Trade-off: an `enabledCtxIds` change made by background.ts since our last
+ * `readBlob` would be written back stale. That field only changes on an
+ * explicit doc-mode toggle — which itself tears this iframe down — so the
+ * window is effectively nil, and losing the whole doc is the worse outcome.
+ */
+const flushSaveSync = (): void => {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!currentCtx || !editor) return;
+  // Same guard as scheduleSave — never overwrite a blob we couldn't read.
+  if (isDocCorrupt || isStorageUnreadable) return;
+  try {
+    const merged: StoredState = {
+      ...storedState,
+      docs: { ...storedState.docs, [currentCtx.id]: editor.getJSON() },
+    };
+    storedState = merged;
+    void PluginAPI.persistDataSynced(JSON.stringify(merged));
+  } catch (err) {
+    logErr('persistDataSynced (sync flush) failed', err);
+  }
+};
+
 const scheduleSave = (): void => {
   if (isLoadingDoc) return;
   // Refuse to persist while the doc is a fallback (loaded from a blob we
   // couldn't parse, or a future-version blob we don't understand). Saving
   // here would overwrite the original blob with our empty seed.
   if (isDocCorrupt || isStorageUnreadable) return;
-  if (saveTimer !== null) clearTimeout(saveTimer);
+  // Throttle: if a save is already pending, leave it — do NOT reschedule.
+  // A debounce (reset-on-every-keystroke) would never fire for a continuous
+  // typist, and the iframe can be torn down at any moment. This guarantees
+  // a save lands at most SAVE_THROTTLE_MS after the first unsaved change.
+  if (saveTimer !== null) return;
   saveTimer = setTimeout(() => {
+    saveTimer = null;
     void flushSave();
-  }, SAVE_DEBOUNCE_MS);
+  }, SAVE_THROTTLE_MS);
 };
 
 /* -------------------------------------------------------------------------- */
 /* Seed + task sync                                                            */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Build a fresh doc from the work-context's task list. Task titles are
- * pulled from the cache (populated by refreshTaskCache before this is
- * called) so the taskRef nodes have content, not just IDs.
- */
-const taskNodeJSON = (taskId: string, variant: 'taskRef' | 'subTaskRef'): unknown => {
-  const task = taskCache.get(taskId);
-  const title = task?.title || '';
-  return {
-    type: variant,
-    attrs: { taskId, isDone: !!task?.isDone },
-    content: title ? [{ type: 'text', text: title }] : [],
-  };
-};
-
-const taskRefWithSubtasksJSON = (taskId: string): unknown[] => {
-  const task = taskCache.get(taskId);
-  const out: unknown[] = [taskNodeJSON(taskId, 'taskRef')];
-  for (const subId of task?.subTaskIds ?? []) {
-    out.push(taskNodeJSON(subId, 'subTaskRef'));
-  }
-  return out;
-};
-
-const buildSeedDoc = (ctx: ActiveWorkContext): unknown => {
-  return {
-    type: 'doc',
-    content: [
-      {
-        type: 'heading',
-        attrs: { level: 1 },
-        content: [{ type: 'text', text: ctx.title }],
-      },
-      ...ctx.taskIds.flatMap(taskRefWithSubtasksJSON),
-      { type: 'paragraph' },
-    ],
-  };
-};
-
-type PMText = { type: 'text'; text: string };
-type PMNode = {
-  type?: string;
-  attrs?: Record<string, unknown>;
-  content?: (PMNode | PMText)[];
-  text?: string;
-};
-
-/**
- * Rebuild the top-level chip ordering from `ctx.taskIds` (the host's
- * canonical order for this view) while keeping any user-customised
- * non-chip blocks (headings, paragraphs, dividers) at the END of the
- * doc so they aren't lost.
- *
- * Why rebuild rather than just filter+append:
- *  - TODAY's ordering changes daily (TODAY_TAG.taskIds). A doc saved
- *    yesterday will have stale order — the regular TODAY view re-sorts,
- *    but the stored doc holds the old layout. Diagnostic confirmed: all
- *    chips were present, just in stored order, not ctx order.
- *  - Stored docs from earlier iterations contain duplicate subtask rows
- *    (a previous bug). Rebuilding lets us dedupe.
- *
- * Trade-off: interleaved customisations (e.g. "paragraph between two
- * chips") lose their original anchor and end up at the doc tail. Pure
- * text-only blocks survive but appear in one block at the bottom; this
- * is documented in ADR #5's "Open known limitations".
- */
-const reconcileTopLevelTaskRefs = (doc: unknown, ctx: ActiveWorkContext): unknown => {
-  const root = doc as PMNode;
-  if (!root || root.type !== 'doc' || !Array.isArray(root.content)) return doc;
-  const src = root.content as (PMNode | PMText)[];
-
-  // Pass 1: index stored chip groups by parent taskId. Dedupe subtask
-  // rows within a group while we're at it.
-  const storedGroups = new Map<string, PMNode[]>();
-  const nonChipBlocks: (PMNode | PMText)[] = [];
-  let headingNode: PMNode | null = null;
-
-  let i = 0;
-  while (i < src.length) {
-    const node = src[i] as PMNode;
-    if (node.type === 'taskRef') {
-      const taskId = (node.attrs?.taskId as string) || '';
-      const group: PMNode[] = [node];
-      const seenSubs = new Set<string>();
-      let j = i + 1;
-      while (j < src.length && (src[j] as PMNode).type === 'subTaskRef') {
-        const subId = ((src[j] as PMNode).attrs?.taskId as string) || '';
-        if (subId && !seenSubs.has(subId)) {
-          seenSubs.add(subId);
-          group.push(src[j] as PMNode);
-        }
-        j++;
-      }
-      // Only the first stored group for a given parent is kept; later
-      // duplicates of the same parent taskId are discarded silently.
-      if (taskId && !storedGroups.has(taskId)) {
-        storedGroups.set(taskId, group);
-      }
-      i = j;
-    } else if (node.type === 'subTaskRef') {
-      // Orphan subtask — drop it.
-      i++;
-    } else if (!headingNode && node.type === 'heading') {
-      // Preserve the first heading as the doc title at the top.
-      headingNode = node;
-      i++;
-    } else {
-      nonChipBlocks.push(node);
-      i++;
-    }
-  }
-
-  // Pass 2: rebuild content in ctx order.
-  const out: (PMNode | PMText)[] = [];
-  if (headingNode) out.push(headingNode);
-  for (const id of ctx.taskIds) {
-    const group = storedGroups.get(id);
-    if (group) {
-      for (const n of group) out.push(n);
-    } else {
-      // New task in this context — emit a fresh chip group.
-      for (const n of taskRefWithSubtasksJSON(id) as PMNode[]) out.push(n);
-    }
-  }
-  // Append the custom non-chip blocks at the end, preserving their order.
-  // A trailing paragraph (the editor's "press / for commands" line) ends
-  // up here too which is the right place for it.
-  for (const n of nonChipBlocks) out.push(n);
-  // Ensure the doc ends with an empty paragraph so the cursor has a
-  // place to land below the last chip.
-  if (out.length === 0 || (out[out.length - 1] as PMNode).type !== 'paragraph') {
-    out.push({ type: 'paragraph' });
-  }
-  return { ...root, content: out };
-};
-
-/**
- * Three-step pipeline applied to a stored doc before loading it into TipTap.
- * Order matters: schema migration first (canonicalises old taskRef shapes),
- * then top-level reconciliation against the current ctx (drops stale chips,
- * appends new ones), then subtask backfill (inserts host subtasks under
- * each kept parent).
- */
-const prepareStoredDoc = (raw: unknown, ctx: ActiveWorkContext): unknown =>
-  ensureSubtasksInJSON(reconcileTopLevelTaskRefs(migrateStoredDoc(raw), ctx));
-
-/**
- * After loading a stored doc, walk the top-level content and insert any
- * subTaskRefs from the host that aren't already present right after their
- * parent taskRef. Idempotent — existing subtask blocks are preserved.
- */
-const ensureSubtasksInJSON = (doc: unknown): unknown => {
-  const root = doc as PMNode;
-  if (!root || root.type !== 'doc' || !Array.isArray(root.content)) return doc;
-  const src = root.content as (PMNode | PMText)[];
-  const out: (PMNode | PMText)[] = [];
-  let i = 0;
-  while (i < src.length) {
-    const node = src[i];
-    out.push(node);
-    if ((node as PMNode).type === 'taskRef') {
-      const parentId = ((node as PMNode).attrs?.taskId as string) || '';
-      const parent = taskCache.get(parentId);
-      const existing = new Set<string>();
-      let j = i + 1;
-      while (j < src.length && (src[j] as PMNode).type === 'subTaskRef') {
-        out.push(src[j]);
-        existing.add(((src[j] as PMNode).attrs?.taskId as string) || '');
-        j++;
-      }
-      if (parent?.subTaskIds) {
-        for (const subId of parent.subTaskIds) {
-          if (!subId || existing.has(subId)) continue;
-          // Skip subs not in the cache yet — they would render as
-          // empty "ghost" rows that look broken. They'll show up on
-          // the next refreshTaskCache via onAnyTaskUpdate +
-          // insertSubtaskByParent.
-          if (!taskCache.has(subId)) continue;
-          out.push(taskNodeJSON(subId, 'subTaskRef') as PMNode);
-        }
-      }
-      i = j;
-    } else {
-      i++;
-    }
-  }
-  return { ...root, content: out };
-};
-
-/**
- * Older docs stored taskRef as an atom node (no `content` array). Walk
- * the stored JSON and populate content from the task cache so the new
- * content-bearing schema can load them. Idempotent — nodes that already
- * have content are left alone.
- */
-const migrateStoredDoc = (raw: unknown): unknown => {
-  const visit = (node: PMNode | PMText | undefined): PMNode | PMText | undefined => {
-    if (!node || typeof node !== 'object') return node;
-    if ('text' in node) return node;
-    if (node.type === 'taskRef' || node.type === 'subTaskRef') {
-      const taskId = (node.attrs?.taskId as string) || '';
-      const task = taskCache.get(taskId);
-      const hasContent = Array.isArray(node.content) && node.content.length > 0;
-      return {
-        ...node,
-        attrs: {
-          taskId,
-          isDone: (node.attrs?.isDone as boolean) ?? !!task?.isDone,
-        },
-        content: hasContent
-          ? node.content
-          : task?.title
-            ? [{ type: 'text', text: task.title }]
-            : [],
-      };
-    }
-    if (Array.isArray(node.content)) {
-      return {
-        ...node,
-        content: node.content
-          .map(visit)
-          .filter((n): n is PMNode | PMText => n !== undefined),
-      };
-    }
-    return node;
-  };
-  return visit(raw as PMNode);
-};
 
 const refreshTaskCache = async (): Promise<void> => {
   try {
@@ -943,7 +329,9 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
   // (rapid context switches), the older one bails after each await so it
   // can't write the previous editor doc under the new context's id.
   const seq = ++activeContextSeq;
-  await flushSave();
+  // Synchronous flush: a context change tears this iframe down right away,
+  // so an awaited save would not survive long enough to persist.
+  flushSaveSync();
   if (seq !== activeContextSeq) return;
 
   // Drop pending title writes from the previous context — letting them
@@ -953,6 +341,9 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
   titleWriteTimers.clear();
   pendingTitleWrites.clear();
   lastWrittenTitles.clear();
+
+  // Drop any pending chip-reorder write-back — it targets the old context.
+  cancelPendingReorder();
 
   currentCtx = ctx;
   isDocCorrupt = false;
@@ -967,10 +358,12 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
   // Snapshot of "tasks already in this context" — onAnyTaskUpdate compares
   // future events against this to detect transitions into the context
   // (a task gaining the TODAY tag, a dueDay being set, etc.).
-  lastSeenTaskIds = snapshotInContextTaskIds(ctx);
+  lastSeenTaskIds = snapshotInContextTaskIds(taskCache.values(), ctx);
 
   const stored = storedState.docs[ctx.id];
-  const docJson = stored ? prepareStoredDoc(stored, ctx) : buildSeedDoc(ctx);
+  const docJson = stored
+    ? prepareStoredDoc(stored, ctx, lookupTask)
+    : buildSeedDoc(ctx, lookupTask);
   try {
     editor.commands.setContent(
       docJson as Parameters<typeof editor.commands.setContent>[0],
@@ -983,7 +376,7 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
     logErr('setContent failed; suppressing saves to protect blob', err);
     isDocCorrupt = true;
     editor.commands.setContent(
-      buildSeedDoc(ctx) as Parameters<typeof editor.commands.setContent>[0],
+      buildSeedDoc(ctx, lookupTask) as Parameters<typeof editor.commands.setContent>[0],
       false,
     );
   }
@@ -992,6 +385,47 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
 
 const isTaskNode = (name: string): name is 'taskRef' | 'subTaskRef' =>
   name === 'taskRef' || name === 'subTaskRef';
+
+/**
+ * Toggle the done state of a task: write it back to the host and optimistically
+ * reflect it on every matching chip's `isDone` attr so the checkmark updates
+ * immediately (and the change rides the undo stack) without waiting for the
+ * host's `ANY_TASK_UPDATE` echo. Shared by the chip done-toggle and the
+ * Mod-Enter keyboard shortcut.
+ */
+const toggleTaskDone = (taskId: string): void => {
+  if (!editor) return;
+  const task = taskCache.get(taskId);
+  if (!task) return;
+  const next = !task.isDone;
+  PluginAPI.updateTask(taskId, { isDone: next }).catch((err) => {
+    logErr('updateTask failed', err);
+  });
+  taskCache.set(taskId, { ...task, isDone: next });
+  const tr = editor.state.tr;
+  editor.state.doc.descendants((node, pos) => {
+    if (isTaskNode(node.type.name) && node.attrs.taskId === taskId) {
+      tr.setNodeAttribute(pos, 'isDone', next);
+      return false;
+    }
+    return undefined;
+  });
+  if (tr.docChanged) editor.view.dispatch(tr);
+};
+
+/**
+ * taskId of the chip the caret currently sits in, or null. Used by the
+ * Mod-Enter shortcut; gated on `editor.isFocused` so the shortcut only fires
+ * when the editor genuinely owns the selection.
+ */
+const currentChipTaskId = (): string | null => {
+  if (!editor || !editor.isFocused) return null;
+  const parent = editor.state.selection.$from.parent;
+  if (isTaskNode(parent.type.name)) {
+    return (parent.attrs.taskId as string) || null;
+  }
+  return null;
+};
 
 const collectKnownTaskIds = (): Set<string> => {
   const ids = new Set<string>();
@@ -1014,11 +448,20 @@ const appendMissingTask = (taskId: string): void => {
     insertSubtaskByParent(taskId, task.parentId);
     return;
   }
+  // Insert the parent chip *with* its title and any subtasks. Inserting a
+  // bare `{ type: 'taskRef' }` leaves the chip with empty inline content,
+  // which `reconcileTitlesFromDoc` then writes back to the host as a title
+  // erasure on the next `onUpdate`.
   const endPos = editor.state.doc.content.size;
   editor
     .chain()
     .focus(endPos)
-    .insertContentAt(endPos, { type: 'taskRef', attrs: { taskId } })
+    .insertContentAt(
+      endPos,
+      taskRefWithSubtasksJSON(taskId, lookupTask) as Parameters<
+        typeof editor.commands.insertContentAt
+      >[1],
+    )
     .run();
 };
 
@@ -1051,10 +494,17 @@ const insertSubtaskByParent = (taskId: string, parentTaskId: string): void => {
     cursor += child.nodeSize;
   }
   if (parentEndPos < 0) return;
+  // Insert with title content from the cache — see appendMissingTask for why
+  // a content-less chip would be written back to the host as an empty title.
   editor
     .chain()
     .focus(parentEndPos)
-    .insertContentAt(parentEndPos, { type: 'subTaskRef', attrs: { taskId } })
+    .insertContentAt(
+      parentEndPos,
+      taskNodeJSON(taskId, 'subTaskRef', lookupTask) as Parameters<
+        typeof editor.commands.insertContentAt
+      >[1],
+    )
     .run();
 };
 
@@ -1135,11 +585,17 @@ const isTaskRefFocused = (taskId: string): boolean => {
  * Refresh inline content + isDone attr for one taskRef from the cache.
  * Skips nodes that the user is currently editing or that have a pending
  * write-back (so we don't undo their typing).
+ *
+ * The selection-in-chip check is gated on `editor.isFocused` because
+ * `editor.state.selection` persists across DOM-focus changes — without
+ * the gate, a chip the user once clicked into stays "focused" forever
+ * from this function's perspective, and an external title change
+ * (host UI, sync) never propagates back to the chip.
  */
 const refreshTaskRef = (taskId: string): void => {
   if (!editor) return;
   if (pendingTitleWrites.has(taskId)) return;
-  if (isTaskRefFocused(taskId)) return;
+  if (editor.isFocused && isTaskRefFocused(taskId)) return;
   const task = taskCache.get(taskId);
   if (!task) return;
 
@@ -1180,94 +636,59 @@ const refreshTaskRef = (taskId: string): void => {
 };
 
 /**
- * Does `task` belong to the given work context? Matches the host's view-
- * level filter:
- *  - PROJECT: task.projectId equals ctx.id
- *  - TODAY:   task has the TODAY tag OR a dueDay OR a dueWithTime
- *  - TAG:     task.tagIds contains ctx.id
+ * Shared tail of `onAnyTaskUpdate`: refresh the affected chip and detect a
+ * task transitioning into the current context. Runs against whatever
+ * `taskCache` currently holds — the caller decides whether to fully
+ * re-fetch first or patch a single entry.
  *
- * Subtasks (task.parentId set) are *not* surfaced at the top level — they
- * follow their parent. Including them here would cause appendMissingTask
- * to insert orphaned subtask chips at the doc tail.
+ * Auto-append fires on transitions out→in for THIS context's filter, not
+ * for the cache globally. A global check would make a task that exists in
+ * another project invisible the moment it gains the TODAY tag (still
+ * "known", so no transition detected) — the "today not working" symptom.
+ * Per-context scoping fixes that and still avoids a chip-replay storm
+ * (an already-in-context task stays in-context → `wasInCtx` true → no
+ * append).
  */
-const isInContext = (task: Task, ctx: ActiveWorkContext): boolean => {
-  if (task.parentId) return false;
-  if (ctx.type === 'PROJECT') return task.projectId === ctx.id;
-  if (ctx.id === 'TODAY') {
-    return !!task.tagIds?.includes('TODAY') || !!task.dueDay || !!task.dueWithTime;
+const processTaskUpdate = (
+  payload: AnyTaskUpdatePayload,
+  ctxSnapshot: ActiveWorkContext,
+): void => {
+  if (payload.taskId) refreshTaskRef(payload.taskId);
+  const newInCtx = snapshotInContextTaskIds(taskCache.values(), ctxSnapshot);
+  if (payload.task && payload.taskId) {
+    const wasInCtx = lastSeenTaskIds.has(payload.taskId);
+    const isInCtx = newInCtx.has(payload.taskId);
+    lastSeenTaskIds = newInCtx;
+    if (!wasInCtx && isInCtx) appendMissingTask(payload.taskId);
+  } else {
+    // Deletion or non-payload event — refresh the snapshot so future
+    // transitions are detected against the new state.
+    lastSeenTaskIds = newInCtx;
   }
-  if (ctx.type === 'TAG') return !!task.tagIds?.includes(ctx.id);
-  return false;
-};
-
-const snapshotInContextTaskIds = (ctx: ActiveWorkContext): Set<string> => {
-  const ids = new Set<string>();
-  for (const t of taskCache.values()) if (isInContext(t, ctx)) ids.add(t.id);
-  return ids;
 };
 
 const onAnyTaskUpdate = (payload: AnyTaskUpdatePayload): void => {
   if (!currentCtx || !editor) return;
   const ctxSnapshot = currentCtx;
-  void refreshTaskCache().then(() => {
-    if (payload.taskId) refreshTaskRef(payload.taskId);
 
-    // Auto-append fires on transitions out→in for THIS context's filter,
-    // not just on transitions out→in for the cache globally. The previous
-    // global check meant a task that existed in another project became
-    // invisible the moment it gained the TODAY tag (still "known", so no
-    // transition detected) — which was exactly the "today not working"
-    // symptom. Scoping per-context fixes that and still prevents the
-    // chip-replay storm on time-tracking ticks (the task was in-context
-    // *and* is in-context, so wasInCtx is true → no append).
-    const newInCtx = snapshotInContextTaskIds(ctxSnapshot);
-    if (payload.task && payload.taskId) {
-      const wasInCtx = lastSeenTaskIds.has(payload.taskId);
-      const isInCtx = newInCtx.has(payload.taskId);
-      lastSeenTaskIds = newInCtx;
-      if (!wasInCtx && isInCtx) appendMissingTask(payload.taskId);
-    } else {
-      // Deletion or non-payload event — refresh the snapshot so future
-      // transitions are detected against the new state.
-      lastSeenTaskIds = newInCtx;
-    }
-  });
-};
+  // Fast path: an in-place single-task update for a task we already hold.
+  // `getTasks()` returns ALL tasks, so a cache hit means no genuinely new
+  // task can be hiding, and `handleUpdateTask` mutates only that one task
+  // entity. Patch the single entry and skip the round-trip. Adds, deletes,
+  // subtask moves and unknown tasks still take the full refresh — a new
+  // task or a sibling reorder is not visible from `payload.task` alone.
+  if (
+    payload.action === UPDATE_TASK_ACTION &&
+    payload.task &&
+    payload.taskId &&
+    taskCache.has(payload.taskId)
+  ) {
+    taskCache.set(payload.taskId, payload.task);
+    processTaskUpdate(payload, ctxSnapshot);
+    return;
+  }
 
-/* -------------------------------------------------------------------------- */
-/* Icons (inline SVG — no Google Fonts dependency)                             */
-/* -------------------------------------------------------------------------- */
-
-// Standard Material Symbols 24×24 outline paths. Kept as a static map so the
-// iframe renders icons offline without loading the Material Icons web font.
-const ICON_PATHS: Record<string, string> = {
-  add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
-  drag_indicator:
-    'M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z',
-  arrow_upward: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
-  arrow_downward: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
-  content_copy:
-    'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
-  delete: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
-  segment: 'M9 18h12v-2H9v2zM3 6v2h18V6H3zm6 7h12v-2H9v2z',
-  title: 'M5 4v3h5.5v12h3V7H19V4z',
-  text_fields: 'M2.5 4v3h5v12h3V7h5V4h-13zm19 5h-9v3h3v7h3v-7h3V9z',
-  short_text: 'M4 9h16v2H4zm0 4h10v2H4z',
-  format_list_bulleted:
-    'M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z',
-  format_list_numbered:
-    'M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm1-9h1V4H2v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 10.9V10H2v1zm5-6v2h14V5H7zm0 14h14v-2H7v2zm0-6h14v-2H7v2z',
-  format_quote: 'M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z',
-  code: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
-  horizontal_rule: 'M4 11h16v2H4z',
-  check_circle_outline:
-    'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-7.7L7.7 10.7l-1.4 1.4L10 15.8l8-8-1.4-1.4z',
-};
-
-const iconSvg = (name: string, extraClass = ''): string => {
-  const path = ICON_PATHS[name] ?? '';
-  const cls = extraClass ? `doc-icon ${extraClass}` : 'doc-icon';
-  return `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${path}"/></svg>`;
+  void refreshTaskCache().then(() => processTaskUpdate(payload, ctxSnapshot));
 };
 
 /* -------------------------------------------------------------------------- */
@@ -1340,7 +761,7 @@ const insertItems = (): MenuItem[] => {
         slashActionInFlight = true;
         try {
           const taskId = await PluginAPI.addTask({
-            title: 'New task',
+            title: '',
             projectId: ctxAtStart.type === 'PROJECT' ? ctxAtStart.id : null,
           });
           await refreshTaskCache();
@@ -1348,10 +769,18 @@ const insertItems = (): MenuItem[] => {
           // host round-trip — the task is still saved in the host, it just
           // doesn't belong in this editor doc.
           if (currentCtx?.id === ctxAtStart.id) {
+            const insertPos = ed.state.selection.from;
             ed.chain()
               .focus()
-              .insertContent({ type: 'taskRef', attrs: { taskId } })
+              .insertContent(
+                taskNodeJSON(taskId, 'taskRef', lookupTask) as Parameters<
+                  typeof ed.commands.insertContent
+                >[0],
+              )
               .run();
+            // Land the caret inside the new empty chip so the user types the
+            // title straight away (mirrors the Enter-to-create behaviour).
+            ed.commands.focus(insertPos + 1);
           }
         } finally {
           slashActionInFlight = false;
@@ -1371,6 +800,10 @@ let menuEl: HTMLDivElement | null = null;
 let menuActiveIndex = 0;
 let menuFilter = '';
 let menuCurrentItems: MenuItem[] = [];
+// Doc position of the `/` that opened a slash-triggered menu, or null when
+// the menu was opened some other way (gutter "+", block menu). When set,
+// picking an item first deletes the `/query` text the user typed.
+let slashQueryFrom: number | null = null;
 
 const closeMenu = (): void => {
   if (menuEl) {
@@ -1380,6 +813,29 @@ const closeMenu = (): void => {
   menuFilter = '';
   menuActiveIndex = 0;
   menuCurrentItems = [];
+  slashQueryFrom = null;
+};
+
+/**
+ * Run a chosen menu item. For a slash-triggered menu, first delete the
+ * literal `/query` text the user typed — the `/` and every filter character
+ * land in the doc as ordinary input, so picking "Heading 1" would otherwise
+ * leave "/head" behind inside the new heading.
+ */
+const runMenuItem = (action: () => void): void => {
+  if (slashQueryFrom !== null && editor) {
+    const to = editor.state.selection.from;
+    const from = Math.min(slashQueryFrom, to);
+    if (to > from) {
+      try {
+        editor.chain().focus().deleteRange({ from, to }).run();
+      } catch {
+        // Position no longer maps (doc changed under us) — leave the text.
+      }
+    }
+  }
+  closeMenu();
+  action();
 };
 
 /**
@@ -1438,8 +894,7 @@ const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
     }
     el.addEventListener('mousedown', (ev) => {
       ev.preventDefault();
-      closeMenu();
-      item.action();
+      runMenuItem(item.action);
     });
     el.addEventListener('mouseenter', () => {
       menuActiveIndex = idx;
@@ -1475,10 +930,16 @@ const caretRect = (): DOMRect => {
   return new DOMRect(0, 0, 0, 0);
 };
 
-const showSlashMenu = (): void => {
+/**
+ * Open the insert menu. `slashTriggered` records whether a literal `/` was
+ * typed (so `runMenuItem` knows to delete the `/query` text on pick); the
+ * gutter "+" button opens the same menu without a slash to remove.
+ */
+const showSlashMenu = (slashTriggered: boolean): void => {
   if (!editor) return;
   menuActiveIndex = 0;
   menuFilter = '';
+  slashQueryFrom = slashTriggered ? Math.max(0, editor.state.selection.from - 1) : null;
   renderMenu(caretRect(), insertItems());
 };
 
@@ -1543,48 +1004,6 @@ const hideDropIndicator = (): void => {
   if (dropIndicatorEl) dropIndicatorEl.style.display = 'none';
 };
 
-/**
- * Range of valid insertion indices for the dragging node. Subtasks must
- * stay inside their parent's group; top-level tasks can land between
- * groups (still allowed inside a group for now — out of scope).
- */
-const validInsertRange = (draggingPos: number): { min: number; max: number } | null => {
-  if (!editor) return null;
-  const doc = editor.state.doc;
-  const dragNode = doc.nodeAt(draggingPos);
-  if (!dragNode || dragNode.type.name !== 'subTaskRef') return null;
-  // Resolve the dragged node's index via manual iteration (same reason as
-  // findParentTaskIdBefore — robust regardless of position-resolve corner
-  // cases).
-  let dragIdx = -1;
-  let cursor = 0;
-  for (let i = 0; i < doc.childCount; i++) {
-    if (cursor === draggingPos) {
-      dragIdx = i;
-      break;
-    }
-    cursor += doc.child(i).nodeSize;
-  }
-  if (dragIdx < 0) return null;
-  // Owning parent: nearest earlier taskRef, walking past sibling subtasks.
-  let parentIdx = -1;
-  for (let i = dragIdx - 1; i >= 0; i--) {
-    const c = doc.child(i);
-    if (c.type.name === 'taskRef') {
-      parentIdx = i;
-      break;
-    }
-    if (c.type.name !== 'subTaskRef') return null;
-  }
-  if (parentIdx < 0) return null;
-  // Walk forward past contiguous subTaskRefs to find the group's end index.
-  let end = parentIdx + 1;
-  while (end < doc.childCount && doc.child(end).type.name === 'subTaskRef') end++;
-  // Insertion gaps that keep the subtask in its group: anywhere between
-  // parent and the first non-subtask sibling.
-  return { min: parentIdx + 1, max: end };
-};
-
 const computeDropTarget = (
   clientY: number,
 ): { targetIdx: number; indicatorY: number; rootRect: DOMRect } | null => {
@@ -1605,32 +1024,10 @@ const computeDropTarget = (
     }
     indicatorY = r.bottom;
   }
-  // Per-source constraints:
-  //  • subTaskRef: stay inside the parent's subtask group (validInsertRange)
-  //  • taskRef:    snap past a foreign subtask so the parent never lands
-  //                between someone else's parent and their first subtask
+  // Snap the raw hit-test index to a legal landing gap for the dragged
+  // slice (see docNav.snapDropTargetIdx), then recompute the indicator Y.
   if (pendingDrag) {
-    const doc = editor.state.doc;
-    if (pendingDrag.sourceType === 'subTaskRef') {
-      const range = validInsertRange(pendingDrag.nodePos);
-      if (range) {
-        targetIdx = Math.max(range.min, Math.min(targetIdx, range.max));
-      }
-    } else if (pendingDrag.sourceType === 'taskRef') {
-      // If targetIdx points at a subTaskRef that isn't ours, advance past
-      // the run so the parent group lands cleanly after its previous owner.
-      while (
-        targetIdx < doc.childCount &&
-        doc.child(targetIdx).type.name === 'subTaskRef' &&
-        !(
-          targetIdx >= pendingDrag.fromIdx &&
-          targetIdx < pendingDrag.fromIdx + pendingDrag.sliceLen
-        )
-      ) {
-        targetIdx++;
-      }
-    }
-    // Recompute indicatorY for the (possibly snapped) target.
+    targetIdx = docNav.snapDropTargetIdx(editor.state.doc, targetIdx, pendingDrag);
     if (targetIdx === 0) {
       indicatorY = blocks[0].getBoundingClientRect().top;
     } else if (targetIdx >= blocks.length) {
@@ -1852,7 +1249,7 @@ const createGutter = (): HTMLDivElement => {
       .focus(blockEnd + 1)
       .insertContentAt(blockEnd + 1, { type: 'paragraph' })
       .run();
-    requestAnimationFrame(() => showSlashMenu());
+    requestAnimationFrame(() => showSlashMenu(false));
   });
 
   const grip = g.querySelector('[data-action="grip"]') as HTMLElement | null;
@@ -1894,32 +1291,133 @@ const findBlockFromEvent = (ev: MouseEvent): HTMLElement | null => {
   return node && node.parentElement === root ? node : null;
 };
 
-/**
- * For a top-level child index `idx`, return how many siblings move as a
- * single atomic unit. A parent taskRef is bundled with its trailing
- * subTaskRef children — moving the parent out from under its subtasks
- * leaves orphans whose host parent no longer matches their doc position.
- */
-const sliceLenAt = (idx: number): number => {
-  if (!editor) return 1;
-  const doc = editor.state.doc;
-  if (idx < 0 || idx >= doc.childCount) return 1;
-  const node = doc.child(idx);
-  if (node.type.name !== 'taskRef') return 1;
-  let end = idx + 1;
-  while (end < doc.childCount && doc.child(end).type.name === 'subTaskRef') end++;
-  return end - idx;
+// Thin `editor`-bound wrappers over the pure `doc-nav` helpers used by the
+// grip drag and block-menu move code. See `ui/doc-nav.ts` for the logic.
+const sliceLenAt = (idx: number): number =>
+  editor ? docNav.sliceLenAt(editor.state.doc, idx) : 1;
+
+const childIdxAtPos = (pos: number): number =>
+  editor ? docNav.childIdxAtPos(editor.state.doc, pos) : -1;
+
+/* -------------------------------------------------------------------------- */
+/* Chip-reorder write-back                                                     */
+/* -------------------------------------------------------------------------- */
+
+// A chip reorder inside the doc is written back to the host so it survives
+// a reload — the load pipeline rebuilds top-level order from `ctx.taskIds`
+// and subtask order from each parent's `subTaskIds`, so an un-persisted
+// reorder would silently revert. Top-level order is only persistable for
+// PROJECT contexts (`reorderTasks` has no TODAY/TAG context type);
+// subtask order persists in any context (it is keyed on the parent task).
+const REORDER_DEBOUNCE_MS = 400;
+let reorderTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingTopLevelReorder = false;
+const pendingSubtaskParents = new Set<string>();
+
+const cancelPendingReorder = (): void => {
+  if (reorderTimer !== null) {
+    clearTimeout(reorderTimer);
+    reorderTimer = null;
+  }
+  pendingTopLevelReorder = false;
+  pendingSubtaskParents.clear();
 };
 
-const childIdxAtPos = (pos: number): number => {
-  if (!editor) return -1;
+/** Top-level `taskRef` ids in current doc order. */
+const collectTopLevelTaskIds = (): string[] => {
+  if (!editor) return [];
   const doc = editor.state.doc;
-  let cursor = 0;
+  const ids: string[] = [];
   for (let i = 0; i < doc.childCount; i++) {
-    if (cursor === pos) return i;
-    cursor += doc.child(i).nodeSize;
+    const child = doc.child(i);
+    if (child.type.name === 'taskRef' && child.attrs.taskId) {
+      ids.push(child.attrs.taskId as string);
+    }
   }
-  return -1;
+  return ids;
+};
+
+/** `subTaskRef` ids that currently sit under `parentTaskId` in the doc. */
+const collectSubtaskIds = (parentTaskId: string): string[] => {
+  if (!editor) return [];
+  const doc = editor.state.doc;
+  const ids: string[] = [];
+  let i = 0;
+  while (i < doc.childCount) {
+    const child = doc.child(i);
+    if (child.type.name === 'taskRef' && child.attrs.taskId === parentTaskId) break;
+    i++;
+  }
+  for (i += 1; i < doc.childCount; i++) {
+    const child = doc.child(i);
+    if (child.type.name !== 'subTaskRef') break;
+    if (child.attrs.taskId) ids.push(child.attrs.taskId as string);
+  }
+  return ids;
+};
+
+/** Order-independent equality of two id lists. */
+const sameIdSet = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const setB = new Set(b);
+  return a.every((id) => setB.has(id));
+};
+
+/**
+ * Write pending chip reorders back to the host. Each `reorderTasks` call
+ * replaces an ordering list wholesale, so it is guarded to fire ONLY for a
+ * true permutation: the doc's chip id set must still equal the host's
+ * current id set. A membership mismatch (a deleted chip, a task added
+ * elsewhere) means this is not a pure reorder — skip it and let the next
+ * context reload reconcile, rather than risk dropping a task from
+ * `project.taskIds` / `task.subTaskIds`.
+ */
+const flushReorder = async (): Promise<void> => {
+  reorderTimer = null;
+  const ctx = currentCtx;
+  const wantTopLevel = pendingTopLevelReorder;
+  const parents = [...pendingSubtaskParents];
+  pendingTopLevelReorder = false;
+  pendingSubtaskParents.clear();
+  if (!ctx || !editor) return;
+
+  // Top-level order — only PROJECT contexts have a reorderTasks target.
+  if (wantTopLevel && ctx.type === 'PROJECT') {
+    const docIds = collectTopLevelTaskIds();
+    try {
+      const fresh = await PluginAPI.getActiveWorkContext();
+      if (
+        docIds.length > 0 &&
+        fresh &&
+        fresh.id === ctx.id &&
+        currentCtx?.id === ctx.id &&
+        sameIdSet(docIds, fresh.taskIds)
+      ) {
+        await PluginAPI.reorderTasks(docIds, ctx.id, 'project');
+      }
+    } catch (err) {
+      logErr('reorderTasks (project) failed', err);
+    }
+  }
+
+  // Subtask order — keyed on the parent task, so any context can persist it.
+  for (const parentId of parents) {
+    if (currentCtx?.id !== ctx.id) break; // context switched mid-flush
+    const docSubIds = collectSubtaskIds(parentId);
+    const parent = taskCache.get(parentId);
+    if (docSubIds.length === 0 || !parent) continue;
+    if (!sameIdSet(docSubIds, parent.subTaskIds ?? [])) continue;
+    try {
+      await PluginAPI.reorderTasks(docSubIds, parentId, 'task');
+    } catch (err) {
+      logErr('reorderTasks (subtasks) failed', err);
+    }
+  }
+};
+
+const scheduleReorder = (): void => {
+  if (reorderTimer !== null) clearTimeout(reorderTimer);
+  reorderTimer = setTimeout(() => void flushReorder(), REORDER_DEBOUNCE_MS);
 };
 
 /**
@@ -1970,6 +1468,22 @@ const moveContentSliceToIndex = (
   tr.setSelection(NodeSelection.create(tr.doc, adjustedInsert));
   ed.view.dispatch(tr.scrollIntoView());
   ed.view.focus();
+
+  // Persist the reorder back to the host. A taskRef slice changed the
+  // top-level order; a subTaskRef slice changed one parent's subtask
+  // order — the dragged subtask is constrained to stay in its group, so
+  // its parent at the new position owns the change.
+  const movedType = sliceNodes[0]?.type.name;
+  if (movedType === 'taskRef') {
+    pendingTopLevelReorder = true;
+    scheduleReorder();
+  } else if (movedType === 'subTaskRef') {
+    const parentId = docNav.findParentTaskIdBefore(ed.state.doc, adjustedInsert);
+    if (parentId) {
+      pendingSubtaskParents.add(parentId);
+      scheduleReorder();
+    }
+  }
 };
 
 /**
@@ -1989,41 +1503,9 @@ const moveBlock = (nodePos: number, direction: 'up' | 'down'): void => {
   const doc = editor.state.doc;
   const idx = childIdxAtPos(nodePos);
   if (idx < 0) return;
-  const src = doc.child(idx);
-  const sliceLen = sliceLenAt(idx);
-
-  let targetIdx: number;
-  if (direction === 'up') {
-    if (idx === 0) return;
-    if (src.type.name === 'subTaskRef') {
-      // Stop at the parent boundary — never escape the group.
-      if (doc.child(idx - 1).type.name !== 'subTaskRef') return;
-      targetIdx = idx - 1;
-    } else {
-      // Walk past any subtask siblings to find the start of the previous group.
-      let prev = idx - 1;
-      while (prev > 0 && doc.child(prev).type.name === 'subTaskRef') prev--;
-      targetIdx = prev;
-    }
-  } else {
-    const sliceEnd = idx + sliceLen;
-    if (sliceEnd >= doc.childCount) return;
-    if (src.type.name === 'subTaskRef') {
-      if (doc.child(sliceEnd).type.name !== 'subTaskRef') return;
-      targetIdx = sliceEnd + 1;
-    } else {
-      // Walk past the next group's parent + its trailing subtasks.
-      let groupEnd = sliceEnd + 1;
-      while (
-        groupEnd < doc.childCount &&
-        doc.child(groupEnd).type.name === 'subTaskRef'
-      ) {
-        groupEnd++;
-      }
-      targetIdx = groupEnd;
-    }
-  }
-  moveContentSliceToIndex(idx, sliceLen, targetIdx);
+  const targetIdx = docNav.moveBlockTargetIdx(doc, idx, direction);
+  if (targetIdx === null) return; // no-op at a boundary
+  moveContentSliceToIndex(idx, sliceLenAt(idx), targetIdx);
 };
 
 const openBlockMenu = (anchorRect: DOMRect): void => {
@@ -2104,6 +1586,8 @@ const openBlockMenu = (anchorRect: DOMRect): void => {
 
   menuActiveIndex = 0;
   menuFilter = '';
+  // The block menu is not slash-triggered — nothing to delete on pick.
+  slashQueryFrom = null;
   renderMenu(anchorRect, items);
 };
 
@@ -2140,13 +1624,25 @@ const mount = async (): Promise<void> => {
   `;
   document.body.appendChild(bubbleEl);
 
+  // Editor-side collaborators handed to both task-ref node variants.
+  // `getEditor` is late-bound — the nodes are constructed before the
+  // `Editor` exists.
+  const taskRefDeps: TaskRefNodeDeps = {
+    getEditor: () => editor,
+    lookupTask,
+    toggleTaskDone,
+    deleteTaskTolerant,
+    createTaskAfter,
+    createSubTaskAfter,
+  };
+
   editor = new Editor({
     element: root,
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: "Type '/' for commands…" }),
-      TaskRefNode,
-      SubTaskRefNode,
+      createTaskRefNode('taskRef', taskRefDeps),
+      createTaskRefNode('subTaskRef', taskRefDeps),
       BubbleMenu.configure({
         element: bubbleEl,
         shouldShow: ({ from, to, state }) => {
@@ -2208,6 +1704,25 @@ const mount = async (): Promise<void> => {
 
   installDocumentDragHandlers();
 
+  // Mod-Enter inside a task chip toggles its done state. Registered on
+  // `document` in the capture phase so it runs before ProseMirror's keymap —
+  // StarterKit's HardBreak binds the same chord, and a same-element listener
+  // (capture or bubble) would still fire after ProseMirror's.
+  document.addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key !== 'Enter' || !(ev.metaKey || ev.ctrlKey) || ev.shiftKey || ev.altKey) {
+        return;
+      }
+      const taskId = currentChipTaskId();
+      if (!taskId) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleTaskDone(taskId);
+    },
+    true,
+  );
+
   editor.view.dom.addEventListener('keydown', (ev: KeyboardEvent) => {
     if (menuEl) {
       if (ev.key === 'Escape') {
@@ -2237,9 +1752,7 @@ const mount = async (): Promise<void> => {
         }
         ev.preventDefault();
         if (menuCurrentItems[menuActiveIndex]) {
-          const action = menuCurrentItems[menuActiveIndex].action;
-          closeMenu();
-          action();
+          runMenuItem(menuCurrentItems[menuActiveIndex].action);
         }
         return;
       }
@@ -2261,7 +1774,8 @@ const mount = async (): Promise<void> => {
         return;
       }
     } else if (ev.key === '/') {
-      setTimeout(() => showSlashMenu(), 0);
+      // Defer so the `/` is in the doc before we read the caret position.
+      setTimeout(() => showSlashMenu(true), 0);
     }
   });
 
@@ -2280,9 +1794,15 @@ const mount = async (): Promise<void> => {
     onAnyTaskUpdate(payload as AnyTaskUpdatePayload);
   });
 
-  window.addEventListener('pagehide', () => {
-    void flushSave();
-  });
+  // Best-effort teardown flush. The throttled save above is the real
+  // safety net (it commits while the iframe is unquestionably alive); this
+  // only catches edits made in the last < SAVE_THROTTLE_MS before the
+  // iframe is discarded. `pagehide` and `unload` are both wired up because
+  // browsers are inconsistent about which fires when an iframe element is
+  // removed from the DOM — flushSaveSync is idempotent, so double-firing
+  // is harmless.
+  window.addEventListener('pagehide', () => flushSaveSync());
+  window.addEventListener('unload', () => flushSaveSync());
 };
 
 /**

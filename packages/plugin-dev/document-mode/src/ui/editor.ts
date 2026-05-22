@@ -324,6 +324,38 @@ const refreshTaskCache = async (): Promise<void> => {
   }
 };
 
+/* -------------------------------------------------------------------------- */
+/* Document-status banner                                                      */
+/* -------------------------------------------------------------------------- */
+
+// Visible notice shown when the stored doc could not be loaded. Without it a
+// corrupt / future-version blob renders as a blank editor, which reads as
+// silent data loss — the banner makes clear the data is safe and untouched.
+let bannerEl: HTMLDivElement | null = null;
+
+const updateDocStatusBanner = (): void => {
+  const message = isStorageUnreadable
+    ? 'This document was saved by a newer version of Super Productivity. ' +
+      'It is shown read-only and your data is left untouched — update the ' +
+      'app to edit it here.'
+    : isDocCorrupt
+      ? 'This document could not be loaded, so a blank one is shown. Your ' +
+        'saved data is untouched; editing is disabled here to protect it.'
+      : null;
+  if (!message) {
+    bannerEl?.remove();
+    bannerEl = null;
+    return;
+  }
+  if (!bannerEl) {
+    bannerEl = document.createElement('div');
+    bannerEl.className = 'doc-banner';
+    bannerEl.setAttribute('role', 'status');
+    document.body.insertBefore(bannerEl, document.body.firstChild);
+  }
+  bannerEl.textContent = message;
+};
+
 const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> => {
   // Take a sequence number for this invocation. If a newer call arrives
   // (rapid context switches), the older one bails after each await so it
@@ -380,6 +412,7 @@ const setActiveContext = async (ctx: ActiveWorkContext | null): Promise<void> =>
       false,
     );
   }
+  updateDocStatusBanner();
   isLoadingDoc = false;
 };
 
@@ -714,41 +747,49 @@ const insertItems = (): MenuItem[] => {
     {
       label: 'Heading 1',
       icon: 'title',
+      hint: '#',
       action: () => ed.chain().focus().setHeading({ level: 1 }).run(),
     },
     {
       label: 'Heading 2',
       icon: 'text_fields',
+      hint: '##',
       action: () => ed.chain().focus().setHeading({ level: 2 }).run(),
     },
     {
       label: 'Heading 3',
       icon: 'short_text',
+      hint: '###',
       action: () => ed.chain().focus().setHeading({ level: 3 }).run(),
     },
     {
       label: 'Bullet list',
       icon: 'format_list_bulleted',
+      hint: '-',
       action: () => ed.chain().focus().toggleBulletList().run(),
     },
     {
       label: 'Numbered list',
       icon: 'format_list_numbered',
+      hint: '1.',
       action: () => ed.chain().focus().toggleOrderedList().run(),
     },
     {
       label: 'Quote',
       icon: 'format_quote',
+      hint: '>',
       action: () => ed.chain().focus().setBlockquote().run(),
     },
     {
       label: 'Code block',
       icon: 'code',
+      hint: '```',
       action: () => ed.chain().focus().toggleCodeBlock().run(),
     },
     {
       label: 'Divider',
       icon: 'horizontal_rule',
+      hint: '---',
       action: () => ed.chain().focus().setHorizontalRule().run(),
     },
     {
@@ -874,10 +915,14 @@ const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
   }
   menuEl = document.createElement('div');
   menuEl.className = 'slash-menu';
+  menuEl.setAttribute('role', 'listbox');
   items.forEach((item, idx) => {
     const el = document.createElement('div');
     el.className = 'slash-menu-item';
-    if (idx === menuActiveIndex) el.classList.add('is-active');
+    el.setAttribute('role', 'option');
+    const isActive = idx === menuActiveIndex;
+    el.classList.toggle('is-active', isActive);
+    el.setAttribute('aria-selected', isActive ? 'true' : 'false');
     // Icon is a constant string we control (SVG path map), so innerHTML is
     // safe; label/hint may come from task titles or other dynamic sources
     // so build those as text nodes to avoid an XSS vector.
@@ -898,13 +943,19 @@ const renderMenu = (rect: DOMRect, items: MenuItem[]): void => {
     });
     el.addEventListener('mouseenter', () => {
       menuActiveIndex = idx;
-      menuEl
-        ?.querySelectorAll('.slash-menu-item')
-        .forEach((n, i) => n.classList.toggle('is-active', i === idx));
+      menuEl?.querySelectorAll('.slash-menu-item').forEach((n, i) => {
+        const on = i === idx;
+        n.classList.toggle('is-active', on);
+        n.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
     });
     menuEl!.appendChild(el);
   });
   positionPopover(menuEl, rect);
+  // Keep the keyboard-active item visible when the list scrolls.
+  menuEl.querySelector('.slash-menu-item.is-active')?.scrollIntoView({
+    block: 'nearest',
+  });
 };
 
 /**
@@ -1149,7 +1200,10 @@ const installDocumentDragHandlers = (): void => {
           el?.classList.add('is-dragging');
         }
       }
-      if (gutterEl) gutterEl.style.display = 'none';
+      if (gutterEl) {
+        gutterEl.style.display = 'none';
+        gutterEl.classList.remove('is-visible');
+      }
       try {
         (document.body as HTMLElement).setPointerCapture(drag.pointerId);
       } catch {
@@ -1223,14 +1277,19 @@ const cancelHideGutter = (): void => {
 const createGutter = (): HTMLDivElement => {
   const g = document.createElement('div');
   g.className = 'block-gutter';
+  g.setAttribute('role', 'toolbar');
+  g.setAttribute('aria-label', 'Block actions');
   g.innerHTML = `
-    <button class="block-gutter-btn" data-action="add" title="Insert below">
+    <button type="button" class="block-gutter-btn" data-action="add"
+      title="Insert below" aria-label="Insert below">
       ${iconSvg('add')}
     </button>
-    <button class="block-gutter-btn" data-action="grip" title="Drag to move; click for menu">
+    <button type="button" class="block-gutter-btn" data-action="grip"
+      title="Drag to move; click for menu" aria-label="Move block or open menu">
       ${iconSvg('drag_indicator')}
     </button>
-    <button class="block-gutter-btn" data-action="details" title="Open task details">
+    <button type="button" class="block-gutter-btn" data-action="details"
+      title="Open task details" aria-label="Open task details">
       ${iconSvg('open_in_new')}
     </button>
   `;
@@ -1277,6 +1336,7 @@ const positionGutter = (block: HTMLElement | null): void => {
   if (!gutterEl) return;
   if (!block) {
     gutterEl.style.display = 'none';
+    gutterEl.classList.remove('is-visible');
     hoveredBlock = null;
     return;
   }
@@ -1292,6 +1352,7 @@ const positionGutter = (block: HTMLElement | null): void => {
   // Right-align the gutter just left of the block; measure its own width so
   // the layout holds whether or not the details button is showing.
   gutterEl.style.left = `${rect.left + window.scrollX - gutterEl.offsetWidth + 6}px`;
+  gutterEl.classList.add('is-visible');
   hoveredBlock = block;
 };
 
@@ -1625,6 +1686,7 @@ const mount = async (): Promise<void> => {
   if (isMounted) return;
   isMounted = true;
   await loadStoredState();
+  updateDocStatusBanner();
   const initialCtx = await PluginAPI.getActiveWorkContext();
 
   const root = document.getElementById('editor-root');
@@ -1636,11 +1698,13 @@ const mount = async (): Promise<void> => {
 
   const bubbleEl = document.createElement('div');
   bubbleEl.className = 'bubble-menu';
+  bubbleEl.setAttribute('role', 'toolbar');
+  bubbleEl.setAttribute('aria-label', 'Text formatting');
   bubbleEl.innerHTML = `
-    <button data-action="bold" title="Bold"><b>B</b></button>
-    <button data-action="italic" title="Italic"><i>I</i></button>
-    <button data-action="strike" title="Strike"><s>S</s></button>
-    <button data-action="code" title="Code"><code>{}</code></button>
+    <button type="button" data-action="bold" title="Bold" aria-label="Bold"><b>B</b></button>
+    <button type="button" data-action="italic" title="Italic" aria-label="Italic"><i>I</i></button>
+    <button type="button" data-action="strike" title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
+    <button type="button" data-action="code" title="Inline code" aria-label="Inline code"><code>{}</code></button>
   `;
   document.body.appendChild(bubbleEl);
 
@@ -1660,7 +1724,9 @@ const mount = async (): Promise<void> => {
     element: root,
     extensions: [
       StarterKit,
-      Placeholder.configure({ placeholder: "Type '/' for commands…" }),
+      Placeholder.configure({
+        placeholder: "Press '/' to add tasks, headings and more…",
+      }),
       createTaskRefNode('taskRef', taskRefDeps),
       createTaskRefNode('subTaskRef', taskRefDeps),
       BubbleMenu.configure({
@@ -1862,5 +1928,17 @@ const waitForPluginAPI = (): Promise<void> =>
 void waitForPluginAPI()
   .then(() => mount())
   .catch(() => {
-    // Already logged in waitForPluginAPI — nothing to mount.
+    // Already logged in waitForPluginAPI. Replace the blank editor area with
+    // a visible message so a failed mount doesn't look like an empty /
+    // broken panel.
+    const root = document.getElementById('editor-root');
+    if (root) {
+      root.textContent = '';
+      const msg = document.createElement('div');
+      msg.className = 'doc-error-state';
+      msg.textContent =
+        'Document Mode could not connect to Super Productivity. ' +
+        'Try closing and reopening this panel.';
+      root.appendChild(msg);
+    }
   });

@@ -208,7 +208,9 @@ export const createTaskRefNode = (
         toggle.className = 'done-toggle';
         toggle.contentEditable = 'false';
         toggle.setAttribute('role', 'checkbox');
-        toggle.setAttribute('tabindex', '-1');
+        // Keyboard-focusable so a task can be completed without a mouse —
+        // the chip's only other route is the undiscoverable Mod-Enter.
+        toggle.setAttribute('tabindex', '0');
         toggle.innerHTML = DONE_TOGGLE_SVG;
 
         const title = document.createElement('span');
@@ -221,6 +223,7 @@ export const createTaskRefNode = (
             dom.classList.remove('is-done');
             toggle.setAttribute('aria-checked', 'false');
             toggle.setAttribute('aria-disabled', 'true');
+            toggle.setAttribute('aria-label', 'Task not found');
           } else {
             dom.classList.remove('is-missing');
             // Trust task.isDone (the host's source of truth) — the attr is
@@ -231,10 +234,21 @@ export const createTaskRefNode = (
             dom.classList.toggle('is-done', done);
             toggle.setAttribute('aria-checked', done ? 'true' : 'false');
             toggle.removeAttribute('aria-disabled');
+            toggle.setAttribute('aria-label', done ? 'Mark as not done' : 'Mark as done');
           }
         };
 
         toggle.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          deps.toggleTaskDone(node.attrs.taskId as string);
+        });
+
+        // Enter / Space activate the toggle for keyboard users. stopPropagation
+        // keeps the keypress out of ProseMirror's keymap; the document-level
+        // Mod-Enter handler already ignores an unmodified Enter.
+        toggle.addEventListener('keydown', (ev) => {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
           ev.preventDefault();
           ev.stopPropagation();
           deps.toggleTaskDone(node.attrs.taskId as string);

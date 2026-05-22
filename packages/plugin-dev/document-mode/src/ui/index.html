@@ -30,7 +30,7 @@
         /* Generous left padding so the block hover gutter (positioned 52px
            left of each block) renders inside editor-root — the mouse never
            leaves the root when moving from block to gutter. */
-        padding: 32px 24px 240px 60px;
+        padding: 32px 24px min(240px, 30vh) 60px;
       }
       .ProseMirror {
         outline: none;
@@ -102,7 +102,6 @@
       /* Placeholder */
       .ProseMirror p.is-editor-empty:first-child::before {
         color: var(--text-color-muted, #999);
-        opacity: 0.45;
         content: attr(data-placeholder);
         float: left;
         height: 0;
@@ -121,12 +120,14 @@
         border-radius: 4px;
       }
       .task-ref:hover {
-        background: var(--task-c-bg-hover, rgba(0, 0, 0, 0.04));
+        /* --task-c-bg-hover is not injected into the plugin iframe; use the
+           generic hover token so the wash is visible in dark mode too. */
+        background: var(--select-hover-bg, rgba(0, 0, 0, 0.04));
       }
       .ProseMirror-selectednode.task-ref {
         background: var(--task-c-selected-bg, rgba(63, 81, 181, 0.08));
-        outline: 1px solid var(--c-primary, #3f51b5);
-        outline-offset: -1px;
+        /* inset shadow (not outline) so the ring follows the 4px radius */
+        box-shadow: inset 0 0 0 1px var(--c-primary, #3f51b5);
       }
       /* Subtask: indented, slightly smaller toggle to match the app's
          sub-task hierarchy without dropping legibility. */
@@ -158,6 +159,11 @@
         justify-content: center;
         cursor: pointer;
         color: var(--text-color, #222);
+      }
+      .task-ref .done-toggle:focus-visible {
+        outline: 2px solid var(--c-primary, #3f51b5);
+        outline-offset: 1px;
+        border-radius: 4px;
       }
       .task-ref .done-toggle-svg {
         width: 22px;
@@ -234,8 +240,8 @@
         opacity: 0;
         transition: opacity 80ms ease;
       }
-      /* Once positioned (display: flex), show immediately. */
-      .block-gutter[style*='flex'] {
+      /* Shown (via .is-visible) once positioned over a hovered block. */
+      .block-gutter.is-visible {
         opacity: 1;
       }
       .block-gutter-btn {
@@ -253,6 +259,11 @@
       }
       .block-gutter-btn:hover {
         background: var(--select-hover-bg, rgba(0, 0, 0, 0.06));
+        color: var(--text-color, #222);
+      }
+      .block-gutter-btn:focus-visible {
+        outline: 2px solid var(--c-primary, #3f51b5);
+        outline-offset: -1px;
         color: var(--text-color, #222);
       }
       .block-gutter-btn .doc-icon {
@@ -326,12 +337,12 @@
         flex: 1;
       }
       .slash-menu-hint {
-        color: var(--text-color-muted, #aaa);
+        color: var(--text-color-less-intense, #666);
         font-size: 12px;
       }
       .slash-menu-empty {
         padding: 8px 12px;
-        color: var(--text-color-muted, #aaa);
+        color: var(--text-color-less-intense, #666);
         font-size: 13px;
       }
 
@@ -360,8 +371,46 @@
       .bubble-menu button:hover {
         background: var(--select-hover-bg, rgba(0, 0, 0, 0.08));
       }
+      .bubble-menu button:focus-visible {
+        outline: 2px solid var(--c-primary, #3f51b5);
+        outline-offset: -1px;
+      }
       .bubble-menu button code {
         font-size: 11px;
+      }
+
+      /* Status banner — corrupt / future-version document notices */
+      .doc-banner {
+        max-width: 720px;
+        margin: 12px auto 0;
+        padding: 8px 14px;
+        border-radius: var(--card-border-radius, 8px);
+        border-left: 3px solid var(--color-warning, #e0a800);
+        background: var(--card-bg, #fff);
+        color: var(--text-color, #222);
+        box-shadow: var(--whiteframe-shadow-2dp, 0 1px 5px rgba(0, 0, 0, 0.2));
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      /* Full-panel fallback shown when the plugin can't reach the host */
+      .doc-error-state {
+        max-width: 480px;
+        margin: 48px auto;
+        padding: 24px;
+        text-align: center;
+        color: var(--text-color-less-intense, #666);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        ::before,
+        ::after {
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+        }
       }
     </style>
   </head>

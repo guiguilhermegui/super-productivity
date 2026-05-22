@@ -137,11 +137,6 @@ import { KeyboardConfig } from '../../../features/config/keyboard-config.model';
         /*}*/
       }
 
-      .doc-mode-btn {
-        position: relative;
-        transition: all 0.2s ease;
-      }
-
       .task-filter-btn {
         position: relative;
         transition: all 0.2s ease;
@@ -186,6 +181,7 @@ export class PageTitleComponent {
   activeWorkContextTypeAndId = toSignal(
     this._workContextService.activeWorkContextTypeAndId$,
   );
+
   // Single source for the current URL path — all route-derived signals compute off this.
   // Query and fragment are stripped so end-anchored matchers work for e.g. `/config#plugins`.
   private _url$ = this._router.events.pipe(

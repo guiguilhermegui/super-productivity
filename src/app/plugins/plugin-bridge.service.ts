@@ -43,7 +43,7 @@ import { WorkContextService } from '../features/work-context/work-context.servic
 import { ProjectService } from '../features/project/project.service';
 import { TagService } from '../features/tag/tag.service';
 import typia from 'typia';
-import { first, map, take, timeout } from 'rxjs/operators';
+import { distinctUntilChanged, first, map, take, timeout } from 'rxjs/operators';
 import { firstValueFrom } from 'rxjs';
 import { selectTaskByIdWithSubTaskData } from '../features/tasks/store/task.selectors';
 import { PluginUserPersistenceService } from './plugin-user-persistence.service';
@@ -145,9 +145,13 @@ export class PluginBridgeService implements OnDestroy {
     [],
   );
 
-  // Snapshot of the active work context, used to filter context-scoped buttons.
+  // Snapshot of the active work context, used to filter context-scoped
+  // buttons. Distinct on (id, type) so it does not churn when task/tag/
+  // project data changes within the same context (e.g. a task is added).
   private readonly _activeWorkContextSig = toSignal(
-    this._workContextService.activeWorkContext$,
+    this._workContextService.activeWorkContext$.pipe(
+      distinctUntilChanged((a, b) => a.id === b.id && a.type === b.type),
+    ),
     { initialValue: null },
   );
 
@@ -531,12 +535,12 @@ export class PluginBridgeService implements OnDestroy {
   }
 
   /**
-   * Snapshot of the active work context for plugins. Returns null when no
-   * context is active (e.g. user is on a settings page) or when the host
-   * hasn't yet emitted a context within the timeout. Plugins calling this
-   * during their constructor / init hook may hit the timeout because
-   * `_afterDataLoadedOnce$` hasn't unblocked yet — returning null is
-   * preferable to a Promise that never resolves.
+   * Snapshot of the active work context for plugins. A context is always
+   * active once the app has loaded — it stays set even on non-work-view
+   * routes — so this normally resolves to that context. It resolves to
+   * null only if the initial data load has not completed within the
+   * timeout (e.g. a plugin calling this very early from its init hook),
+   * which is preferable to a Promise that never resolves.
    */
   async getActiveWorkContext(): Promise<ActiveWorkContext | null> {
     try {
@@ -545,15 +549,14 @@ export class PluginBridgeService implements OnDestroy {
           // 10s is well past normal data-load time but still bounded so
           // a plugin can fall back to other behaviour instead of hanging.
           timeout({ first: 10_000 }),
-          take(1),
         ),
       );
-      if (!ctx) return null;
       return {
         id: ctx.id,
         type: ctx.type,
         title: ctx.title,
-        taskIds: ctx.taskIds,
+        // Copy: the plugin must not be able to mutate the store's array.
+        taskIds: [...ctx.taskIds],
       };
     } catch {
       return null;
@@ -947,7 +950,7 @@ export class PluginBridgeService implements OnDestroy {
   async selectTask(taskId: string): Promise<void> {
     typia.assert<string>(taskId);
 
-    const task = await this._taskService.getByIdOnce$(taskId).pipe(first()).toPromise();
+    const task = await firstValueFrom(this._taskService.getByIdOnce$(taskId));
     if (!task) {
       throw new Error(
         this._translateService.instant(T.PLUGINS.TASK_NOT_FOUND, { taskId }),

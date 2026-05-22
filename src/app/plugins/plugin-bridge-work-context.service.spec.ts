@@ -360,4 +360,21 @@ describe('PluginBridgeService.workContext — header buttons + embed slot', () =
       expect(service.workContextEmbedPluginId()).toBe(PLUGIN_A);
     });
   });
+
+  describe('getActiveWorkContext', () => {
+    it('returns a defensive copy of taskIds, not the live store array', async () => {
+      // The ActiveWorkContext type promises taskIds is a safe snapshot. A
+      // plugin mutating it must not corrupt NgRx state.
+      const liveTaskIds = ['task-1', 'task-2'];
+      const { service } = setup({ ...projectCtx, taskIds: liveTaskIds });
+
+      const result = await service.getActiveWorkContext();
+
+      expect(result).not.toBeNull();
+      expect(result!.taskIds).toEqual(liveTaskIds);
+      expect(result!.taskIds).not.toBe(liveTaskIds);
+      result!.taskIds.push('task-3');
+      expect(liveTaskIds).toEqual(['task-1', 'task-2']);
+    });
+  });
 });

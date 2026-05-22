@@ -157,15 +157,24 @@ export class WorkViewComponent implements OnInit, OnDestroy {
   );
 
   /**
-   * Pluginid currently embedded in the work-view body, or null. The plugin
-   * iframe replaces the task list when set AND the active context is a
-   * project or the TODAY tag.
+   * Whether the current work context allows a plugin embed in the work-view
+   * body. Mirrors the restriction documented on `PluginAPI.showInWorkContext`:
+   * project and TODAY contexts only — a plugin embed is never shown for a
+   * regular tag or a non-work-view route.
+   */
+  private _isEmbeddableContext = computed(
+    () => this.isProjectContext() || this._isTodayContext(),
+  );
+
+  /**
+   * Plugin id currently embedded in the work-view body, or null. The plugin
+   * iframe replaces the task list when a plugin has requested the embed
+   * (`showInWorkContext`) AND the active context is embeddable.
    */
   pluginEmbedId = computed(() => {
     const id = this._pluginBridge.workContextEmbedPluginId();
     if (!id) return null;
-    if (this.isProjectContext() || this._isTodayContext()) return id;
-    return null;
+    return this._isEmbeddableContext() ? id : null;
   });
 
   isFinishDayEnabled = computed(

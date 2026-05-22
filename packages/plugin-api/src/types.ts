@@ -203,19 +203,21 @@ export interface ActiveWorkContext {
   type: 'PROJECT' | 'TAG';
   title: string;
   /**
-   * Frozen at emit time — see the {@link ActiveWorkContext} note above.
+   * An independent copy taken at emit time — safe to read, and mutating it
+   * has no effect on the app. See the {@link ActiveWorkContext} note above.
    */
   taskIds: string[];
 }
 
 /**
- * Fires when the user switches between projects/tags. Payload is null when
- * no context is active (e.g. on a non-work-view route).
+ * Payload of the WORK_CONTEXT_CHANGE hook, fired when the user switches
+ * between projects/tags. A context is always active while the app is
+ * running, so the payload is never null.
  *
  * The included `taskIds` is a snapshot — re-read via `getActiveWorkContext()`
  * if you care about the current order/membership.
  */
-export type WorkContextChangePayload = ActiveWorkContext | null;
+export type WorkContextChangePayload = ActiveWorkContext;
 
 // Map hook types to their payload types
 export interface HookPayloadMap {
@@ -435,19 +437,33 @@ export interface PluginAPI {
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
 
   /**
-   * Returns the currently active project or tag, or null if none is active
-   * (e.g. the user is on a settings page). The TODAY tag has id `'TODAY'`.
+   * Returns the currently active project or tag. The TODAY tag has id
+   * `'TODAY'`. A context stays active even on non-work-view routes (e.g. a
+   * settings page) — it is the last one the user opened. Resolves to null
+   * only if the app has not finished its initial data load.
    */
   getActiveWorkContext(): Promise<ActiveWorkContext | null>;
 
   /**
-   * Mount this plugin's index.html inside the work-view body for the active
-   * work context, in place of the task list. Only takes effect when the
-   * active context is a project or the TODAY tag. Call `closeWorkContextView`
-   * to revert to the normal task-list view.
+   * Mount this plugin's index.html inside the work-view body, in place of
+   * the task list.
+   *
+   * The embed is shown **only while the active context is a project or the
+   * TODAY tag**. For any other context (a regular tag, or a non-work-view
+   * route) it is a silent no-op — nothing renders and no error is raised.
+   * The embed automatically hides and reappears as the user navigates in
+   * and out of eligible contexts; the request stays armed until
+   * `closeWorkContextView` is called. To check whether a call will take
+   * effect right now, read `getActiveWorkContext()` first.
+   *
+   * Call `closeWorkContextView` to revert to the normal task-list view.
    */
   showInWorkContext(): void;
 
+  /**
+   * Revert the work-view body to the normal task list. No-op unless this
+   * plugin currently owns the embed.
+   */
   closeWorkContextView(): void;
 
   // cross-process communication

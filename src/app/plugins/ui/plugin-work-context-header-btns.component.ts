@@ -27,10 +27,10 @@ import { PluginWorkContextHeaderBtnCfg } from '../plugin-api.model';
       }
 
       /* Toggled state: the button's plugin currently owns the work-view
-         embed (e.g. Document Mode is on for this context). A neutral ink
-         fill — stronger than the standard selected overlay so it reads as
-         a deliberate toggle rather than a hover, and distinct from the
-         accent colour reserved for time tracking. */
+         embed for the active context. A neutral ink fill — stronger than
+         the standard selected overlay so it reads as a deliberate toggle
+         rather than a hover, and distinct from the accent colour reserved
+         for time tracking. */
       button.isActive {
         background: rgba(var(--ink-on-channel), 0.18);
         transition: background var(--transition-standard);
@@ -51,8 +51,8 @@ export class PluginWorkContextHeaderBtnsComponent {
 
   /**
    * The plugin currently embedded in the work-view body, or null. A header
-   * button renders toggled when its plugin owns that embed — which is how
-   * Document Mode's button reflects its on/off state.
+   * button renders toggled when its own plugin owns that embed, so a button
+   * that toggles a work-view embed reflects its on/off state.
    */
   readonly activeEmbedPluginId = this._pluginBridge.workContextEmbedPluginId;
 

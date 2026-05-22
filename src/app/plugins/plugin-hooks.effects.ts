@@ -341,7 +341,8 @@ export class PluginHooksEffects {
             id: ctx.id,
             type: ctx.type,
             title: ctx.title,
-            taskIds: ctx.taskIds,
+            // Copy: the plugin must not be able to mutate the store's array.
+            taskIds: [...ctx.taskIds],
           });
         }),
       ),

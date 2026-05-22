@@ -161,8 +161,7 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
         const pendingCalls = new Map();
         const dialogButtonHandlers = new Map();
         const hookHandlers = new Map(); // Store hook handlers by hook type
-        const workContextBtnHandlers = new Map(); // buttonHandlerId -> onClick
-        let workContextBtnHandlerSeq = 0;
+        const workContextBtnHandlers = new Map(); // button label -> onClick
 
         // Handle responses from parent
         window.addEventListener('message', function(event) {
@@ -346,15 +345,15 @@ export const createPluginApiScript = (config: PluginIframeConfig): string => {
           registerShortcut: (cfg) => callApi('registerShortcut', [cfg]),
           registerSidePanelButton: (cfg) => callApi('registerSidePanelButton', [cfg]),
           registerWorkContextHeaderButton: (cfg) => {
-            // onClick is not structured-cloneable across postMessage; store it
-            // locally and send a handler id placeholder. Host posts a
-            // WORK_CONTEXT_BTN_CLICK message back when the button is invoked.
-            const handlerId = ++workContextBtnHandlerSeq;
-            workContextBtnHandlers.set(handlerId, cfg.onClick);
+            // onClick is not structured-cloneable across postMessage; keep it
+            // locally, keyed by the button's label, and send the rest of the
+            // cfg. The host rebuilds onClick as a proxy and posts a
+            // WORK_CONTEXT_BTN_CLICK back (carrying the label) on invocation.
+            // Keying by label — which the host also dedups on — means
+            // re-registering a button overwrites instead of leaking.
+            workContextBtnHandlers.set(cfg.label, cfg.onClick);
             const { onClick, ...rest } = cfg;
-            return callApi('registerWorkContextHeaderButton', [
-              { ...rest, __handlerId: handlerId },
-            ]);
+            return callApi('registerWorkContextHeaderButton', [rest]);
           },
 
           // Node execution (if available)
@@ -499,18 +498,18 @@ export const handlePluginMessage = async (
       // For iframe plugins, we need to handle API calls differently
       // Some methods need special handling because the bridge methods have different signatures
 
-      // registerWorkContextHeaderButton: wrap the iframe's handler id with a
-      // proxy fn that posts back into the iframe when invoked.
+      // registerWorkContextHeaderButton: the iframe keeps its onClick
+      // locally, keyed by the button label; rebuild onClick here as a proxy
+      // that posts WORK_CONTEXT_BTN_CLICK back into the iframe, where the
+      // real handler is looked up by that same label.
       if (method === 'registerWorkContextHeaderButton' && args.length >= 1) {
         const rawCfg = args[0] as Record<string, unknown>;
-        const handlerId = rawCfg.__handlerId as number | undefined;
-        if (typeof handlerId !== 'number') {
-          throw new Error('registerWorkContextHeaderButton missing __handlerId');
+        const handlerId = rawCfg.label;
+        if (typeof handlerId !== 'string' || !handlerId) {
+          throw new Error('registerWorkContextHeaderButton requires a string label');
         }
-        const { __handlerId, ...rest } = rawCfg;
-        void __handlerId;
         const wrappedCfg = {
-          ...rest,
+          ...rawCfg,
           onClick: (ctx: unknown): void => {
             (event.source as Window)?.postMessage(
               {

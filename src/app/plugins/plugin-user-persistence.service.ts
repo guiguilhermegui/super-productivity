@@ -21,17 +21,35 @@ export class PluginUserPersistenceService {
   private _store = inject(Store);
 
   /**
-   * Track last persist time per plugin for rate limiting
+   * Track the last *committed* persist time per plugin, for rate limiting.
    */
   private _lastPersistTime = new Map<string, number>();
 
   /**
-   * Persist user data for a specific plugin (called by plugin via persistDataSynced)
+   * Data that arrived inside the rate-limit window and is waiting to be
+   * committed. Coalesced — only the most recent value per plugin is kept.
+   */
+  private _pendingData = new Map<string, string>();
+
+  /**
+   * Active flush timers for coalesced writes, keyed by plugin id.
+   */
+  private _flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
+   * Persist user data for a specific plugin (called by plugin via persistDataSynced).
+   *
+   * Rate limiting *coalesces* rather than rejects: a call that arrives inside
+   * the MIN_PLUGIN_PERSIST_INTERVAL_MS window is not dropped — its data is
+   * held and committed when the window opens (latest write wins). This still
+   * caps the op-log/sync rate at one write per interval, but never discards
+   * the caller's most recent data. Dropping it silently lost edits — e.g. a
+   * plugin's final save on teardown landing just after a periodic save.
+   *
    * @throws Error if data exceeds MAX_PLUGIN_DATA_SIZE
-   * @throws Error if called too frequently (rate limited)
    */
   persistPluginUserData(pluginId: string, data: string): void {
-    // Validate data size
+    // Validate data size — applies whether the write commits now or later.
     const dataSize = new Blob([data]).size;
     if (dataSize > MAX_PLUGIN_DATA_SIZE) {
       throw new Error(
@@ -40,21 +58,46 @@ export class PluginUserPersistenceService {
       );
     }
 
-    // Rate limiting: check if enough time has passed since last persist
+    // Rate limiting: check if enough time has passed since the last commit.
     const now = Date.now();
     const lastPersist = this._lastPersistTime.get(pluginId) || 0;
     const timeSinceLastPersist = now - lastPersist;
 
     if (timeSinceLastPersist < MIN_PLUGIN_PERSIST_INTERVAL_MS) {
-      throw new Error(
-        `Plugin data persist rate limited. Please wait ${MIN_PLUGIN_PERSIST_INTERVAL_MS}ms between calls. ` +
-          `Time since last call: ${timeSinceLastPersist}ms`,
-      );
+      // Inside the window: coalesce. Hold the latest data and flush it once
+      // the window opens, so no write is discarded.
+      this._pendingData.set(pluginId, data);
+      if (!this._flushTimers.has(pluginId)) {
+        const delay = MIN_PLUGIN_PERSIST_INTERVAL_MS - timeSinceLastPersist;
+        this._flushTimers.set(
+          pluginId,
+          setTimeout(() => this._flushPendingData(pluginId), delay),
+        );
+      }
+      return;
     }
 
-    // Update last persist time
-    this._lastPersistTime.set(pluginId, now);
+    this._commit(pluginId, data, now);
+  }
 
+  /**
+   * Commit a coalesced write once its rate-limit window has elapsed.
+   */
+  private _flushPendingData(pluginId: string): void {
+    this._flushTimers.delete(pluginId);
+    const data = this._pendingData.get(pluginId);
+    if (data === undefined) {
+      return;
+    }
+    this._pendingData.delete(pluginId);
+    this._commit(pluginId, data, Date.now());
+  }
+
+  /**
+   * Dispatch the persist action and record the commit time for rate limiting.
+   */
+  private _commit(pluginId: string, data: string, at: number): void {
+    this._lastPersistTime.set(pluginId, at);
     const pluginUserData: PluginUserData = {
       id: pluginId,
       data,
@@ -63,9 +106,16 @@ export class PluginUserPersistenceService {
   }
 
   /**
-   * Load user data for a specific plugin (called by plugin via loadSyncedData)
+   * Load user data for a specific plugin (called by plugin via loadSyncedData).
+   *
+   * Returns a coalesced-but-not-yet-committed write if one is pending, so a
+   * plugin's read-modify-write cycle always sees its own latest data.
    */
   async loadPluginUserData(pluginId: string): Promise<string | null> {
+    const pending = this._pendingData.get(pluginId);
+    if (pending !== undefined) {
+      return pending;
+    }
     const currentState = await firstValueFrom(
       this._store.select(selectPluginUserDataFeatureState),
     );
@@ -74,10 +124,24 @@ export class PluginUserPersistenceService {
   }
 
   /**
-   * Remove user data for a specific plugin
+   * Remove user data for a specific plugin.
    */
   removePluginUserData(pluginId: string): void {
+    this._cancelPending(pluginId);
     this._store.dispatch(deletePluginUserData({ pluginId }));
+  }
+
+  /**
+   * Drop any pending coalesced write (and its timer) for a plugin, so it
+   * cannot resurrect data that is being removed.
+   */
+  private _cancelPending(pluginId: string): void {
+    const timer = this._flushTimers.get(pluginId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this._flushTimers.delete(pluginId);
+    }
+    this._pendingData.delete(pluginId);
   }
 
   /**
@@ -95,6 +159,7 @@ export class PluginUserPersistenceService {
       this._store.select(selectPluginUserDataFeatureState),
     );
     for (const item of currentState) {
+      this._cancelPending(item.id);
       this._store.dispatch(deletePluginUserData({ pluginId: item.id }));
     }
   }

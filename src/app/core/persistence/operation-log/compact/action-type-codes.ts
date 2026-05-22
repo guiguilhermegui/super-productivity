@@ -50,10 +50,6 @@ export const ACTION_TYPE_TO_CODE: Record<ActionType, string> = {
   // GlobalConfig actions (C)
   [ActionType.GLOBAL_CONFIG_UPDATE_SECTION]: 'CU',
 
-  // DocumentMode actions (D) — feature removed, kept so historical op-log
-  // entries decode to a stable action type rather than the raw 'DU' code.
-  [ActionType.DOCUMENT_MODE_UPDATE_BLOCKS_DELTA]: 'DU',
-
   // Metric actions (E)
   [ActionType.METRIC_ADD]: 'EA',
   [ActionType.METRIC_DELETE]: 'ED',

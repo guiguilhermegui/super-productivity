@@ -104,10 +104,6 @@ export enum ActionType {
   NOTE_UPDATE_ORDER = '[Note] Update Note Order',
   NOTE_MOVE_TO_PROJECT = '[Note] Move to other project',
 
-  // DocumentMode actions — feature removed, enum entry kept so historical
-  // op-log entries decode to a stable action type identifier.
-  DOCUMENT_MODE_UPDATE_BLOCKS_DELTA = '[DocumentMode] Update Document Blocks Delta',
-
   // Project actions (P)
   PROJECT_ADD = '[Project] Add Project',
   PROJECT_UPDATE = '[Project] Update Project',

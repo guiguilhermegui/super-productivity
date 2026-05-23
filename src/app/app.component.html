@@ -94,6 +94,7 @@
   <context-menu
     [contextMenu]="backgroundContextMenu"
     [rightClickTriggerEl]="routeWrapper.nativeElement"
+    [isEnabled]="isWorkViewPage()"
     [allowedSelectors]="'
       .route-wrapper,
       .today,
@@ -101,9 +102,7 @@
       .task-list-wrapper > *,
       .task-list-inner,
       .work-view-header,
-      .page-wrapper,
       .route-wrapper > *,
-      .search-results,
       .add-more-or-finish,
       .add-more-or-finish > *,
       .no-tasks-illu-wrapper,

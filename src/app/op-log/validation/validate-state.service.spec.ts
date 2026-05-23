@@ -64,6 +64,7 @@ describe('ValidateStateService', () => {
 
     mockStateSnapshotService = jasmine.createSpyObj('StateSnapshotService', [
       'getStateSnapshot',
+      'getStateSnapshotAsync',
     ]);
     mockClientIdProvider = {
       loadClientId: jasmine
@@ -246,19 +247,16 @@ describe('ValidateStateService', () => {
       }
     });
 
-    it('should return true when state is valid', async () => {
+    it('should return true (and skip the async archive snapshot) when state is valid', async () => {
       const validState = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(validState as any);
-
-      // Mock validateAndRepair to return valid state (empty state doesn't pass full Typia validation)
-      spyOn(service, 'validateAndRepair').and.resolveTo({
-        isValid: true,
-        wasRepaired: false,
-      });
+      // Quick validation passes → the expensive async (archive) snapshot is skipped.
+      spyOn(service, 'validateState').and.resolveTo({ isValid: true, typiaErrors: [] });
 
       const result = await service.validateAndRepairCurrentState('test-context');
 
       expect(result).toBeTrue();
+      expect(mockStateSnapshotService.getStateSnapshotAsync).not.toHaveBeenCalled();
       expect(mockRepairService.createRepairOperation).not.toHaveBeenCalled();
       expect(store.dispatch).not.toHaveBeenCalled();
     });
@@ -275,6 +273,7 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
         mockClientIdProvider.loadClientId.and.returnValue(Promise.resolve(null));
 
         const result = await service.validateAndRepairCurrentState('sync');
@@ -289,6 +288,7 @@ describe('ValidateStateService', () => {
     it('should pass skipLock option to repair service when callerHoldsLock is true', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -311,6 +311,7 @@ describe('ValidateStateService', () => {
     it('should start/end hydration state for sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -338,6 +339,7 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
 
         await service.validateAndRepairCurrentState('other-context');
 
@@ -359,6 +361,7 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
         mockHydrationStateService.isApplyingRemoteOps.and.returnValue(true);
 
         await service.validateAndRepairCurrentState('sync');
@@ -374,6 +377,7 @@ describe('ValidateStateService', () => {
     it('should dispatch loadAllData with isRemote flag for sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -393,6 +397,7 @@ describe('ValidateStateService', () => {
     it('should dispatch loadAllData without isRemote flag for non-sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -407,6 +412,51 @@ describe('ValidateStateService', () => {
       expect(store.dispatch).toHaveBeenCalled();
       const dispatchedAction = (store.dispatch as jasmine.Spy).calls.mostRecent().args[0];
       expect(dispatchedAction.meta?.isRemote).toBeFalsy();
+    });
+
+    // Regression: archives (archiveYoung/archiveOld) live in IndexedDB, not NgRx.
+    // The sync getStateSnapshot() hardcodes empty archives, so a REPAIR op built
+    // from it wiped archives on every other client that applied it. When a repair
+    // is needed, the REPAIR op must be built from the async snapshot.
+    it('should build the REPAIR op from the async snapshot so it carries archive data', async () => {
+      const archivedTaskId = 'archived-task-1';
+      const stateWithArchive = createEmptyState();
+      stateWithArchive.archiveYoung = {
+        task: {
+          ids: [archivedTaskId],
+          entities: { [archivedTaskId]: { id: archivedTaskId } },
+        },
+        timeTracking: initialTimeTrackingState,
+        lastTimeTrackingFlush: 0,
+      };
+      // Quick (sync) validation fails → the repair path loads the async snapshot.
+      mockStateSnapshotService.getStateSnapshot.and.returnValue(
+        createEmptyState() as any,
+      );
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(
+        stateWithArchive as any,
+      );
+
+      const validateAndRepairSpy = spyOn(service, 'validateAndRepair').and.resolveTo({
+        isValid: true,
+        wasRepaired: true,
+        repairedState: stateWithArchive,
+        repairSummary: { typeErrorsFixed: 1 } as any,
+      });
+
+      await service.validateAndRepairCurrentState('sync');
+
+      // The repair path must load the async snapshot (archives from IndexedDB).
+      expect(mockStateSnapshotService.getStateSnapshotAsync).toHaveBeenCalled();
+
+      // The state fed into validation/repair must include the archive...
+      const validatedState = validateAndRepairSpy.calls.mostRecent().args[0];
+      expect((validatedState.archiveYoung as any).task.ids).toEqual([archivedTaskId]);
+
+      // ...and so must the REPAIR operation payload.
+      const repairedState = mockRepairService.createRepairOperation.calls.mostRecent()
+        .args[0] as any;
+      expect(repairedState.archiveYoung.task.ids).toEqual([archivedTaskId]);
     });
   });
 });

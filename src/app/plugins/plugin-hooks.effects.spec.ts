@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { provideMockActions } from '@ngrx/effects/testing';
-import { Observable, of } from 'rxjs';
+import { EMPTY, Observable, of } from 'rxjs';
 import { PluginHooksEffects } from './plugin-hooks.effects';
+import { WorkContextService } from '../features/work-context/work-context.service';
 import { provideMockStore, MockStore } from '@ngrx/store/testing';
 import { PluginService } from './plugin.service';
 import { TaskSharedActions } from '../root-store/meta/task-shared.actions';
@@ -72,6 +73,9 @@ describe('PluginHooksEffects', () => {
           },
         }),
         { provide: PluginService, useValue: pluginServiceMock },
+        // workContextChange$ reads activeWorkContext$ at construction; an
+        // empty stream keeps that effect inert for the other effects' tests.
+        { provide: WorkContextService, useValue: { activeWorkContext$: EMPTY } },
       ],
     });
 

@@ -47,6 +47,8 @@ import {
 import { LOCAL_ACTIONS } from '../util/local-actions.token';
 import { PlannerActions } from '../features/planner/store/planner.actions';
 import { LanguageCode } from '../core/locale.constants';
+import { WorkContextService } from '../features/work-context/work-context.service';
+import { toActiveWorkContext } from './util/active-work-context.util';
 
 @Injectable()
 export class PluginHooksEffects {
@@ -54,6 +56,7 @@ export class PluginHooksEffects {
   private readonly store = inject(Store);
   private readonly pluginService = inject(PluginService);
   private readonly pluginI18nService = inject(PluginI18nService);
+  private readonly workContextService = inject(WorkContextService);
 
   taskComplete$ = createEffect(
     () =>
@@ -339,6 +342,22 @@ export class PluginHooksEffects {
             action: action.type,
             projectState,
           });
+        }),
+      ),
+    { dispatch: false },
+  );
+
+  // Fires once per work-context navigation. Distincts by (id, type) so it
+  // doesn't fire when project/tag data changes (e.g. task added).
+  workContextChange$ = createEffect(
+    () =>
+      this.workContextService.activeWorkContext$.pipe(
+        distinctUntilChanged((a, b) => a?.id === b?.id && a?.type === b?.type),
+        tap((ctx) => {
+          this.pluginService.dispatchHook(
+            PluginHooks.WORK_CONTEXT_CHANGE,
+            toActiveWorkContext(ctx),
+          );
         }),
       ),
     { dispatch: false },

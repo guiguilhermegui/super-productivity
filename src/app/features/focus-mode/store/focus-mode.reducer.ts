@@ -280,9 +280,13 @@ export const focusModeReducer = createReducer(
 
     const updatedTimer = updateTimer(state.timer);
 
-    // Check if timer completed - mark for completion but let effects handle the flow
-    if (updatedTimer.duration > 0 && updatedTimer.elapsed >= updatedTimer.duration) {
+    // Check if timer completed - mark for completion but let effects handle the flow.
+    if (updatedTimer.elapsed >= updatedTimer.duration) {
       if (updatedTimer.purpose === 'work') {
+        // Flowtime work sessions have no fixed duration and never auto-complete via tick.
+        if (state.mode === FocusModeMode.Flowtime) {
+          return { ...state, timer: updatedTimer };
+        }
         // When overtime is enabled, keep the timer running past duration
         if (state._isOvertimeEnabled) {
           return { ...state, timer: updatedTimer };

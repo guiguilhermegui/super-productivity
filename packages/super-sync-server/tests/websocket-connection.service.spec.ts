@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { WebSocketConnectionService } from '../src/sync/services/websocket-connection.service';
+import { Logger } from '../src/logger';
 
 vi.mock('../src/logger', () => ({
   Logger: {
@@ -62,6 +63,10 @@ describe('WebSocketConnectionService', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.mocked(Logger.info).mockClear();
+    vi.mocked(Logger.warn).mockClear();
+    vi.mocked(Logger.debug).mockClear();
+    vi.mocked(Logger.error).mockClear();
     service = new WebSocketConnectionService();
   });
 
@@ -225,6 +230,139 @@ describe('WebSocketConnectionService', () => {
       expect(incumbent.close).toHaveBeenCalledWith(4009, 'Replaced by newer connection');
       expect(successor.close).not.toHaveBeenCalled();
       expect(service.getConnectionCount()).toBe(10);
+    });
+
+    it('should slide the cooldown forward on each refused challenger so a sustained storm cannot tick into an eviction', () => {
+      const incumbent = createMockWs();
+      service.addConnection(1, 'client-a', incumbent as any);
+
+      // Storm: a challenger every 1s for 10s. Without sliding, after 5s the
+      // gate would expire and the next challenger would evict the incumbent.
+      // With sliding, every refusal pushes the gate so the incumbent is kept.
+      for (let i = 0; i < 10; i++) {
+        vi.advanceTimersByTime(1_000);
+        const challenger = createMockWs();
+        service.addConnection(1, 'client-a', challenger as any);
+        expect(challenger.close).toHaveBeenCalledWith(4008, 'Reconnecting too fast');
+      }
+
+      // Incumbent never evicted (no 4009 sent), only one slot used.
+      expect(incumbent.close).not.toHaveBeenCalled();
+      expect(service.getConnectionCount()).toBe(1);
+
+      // After the storm quiets (5s with no challengers), the next reconnect
+      // is treated as genuine and evicts the incumbent — recovery path intact.
+      vi.advanceTimersByTime(5_000);
+      const successor = createMockWs();
+      service.addConnection(1, 'client-a', successor as any);
+      expect(incumbent.close).toHaveBeenCalledWith(4009, 'Replaced by newer connection');
+      expect(successor.close).not.toHaveBeenCalled();
+    });
+
+    it('should warn only once per incumbent storm and summarize on removal', () => {
+      const incumbent = createMockWs();
+      service.addConnection(1, 'client-a', incumbent as any);
+      vi.mocked(Logger.warn).mockClear();
+      vi.mocked(Logger.info).mockClear();
+
+      // 25 refused challengers — only the first should emit a WARN.
+      for (let i = 0; i < 25; i++) {
+        const challenger = createMockWs();
+        service.addConnection(1, 'client-a', challenger as any);
+        expect(challenger.close).toHaveBeenCalledWith(4008, 'Reconnecting too fast');
+        // Keep sliding the gate but stay inside it.
+        vi.advanceTimersByTime(100);
+      }
+
+      const warnCalls = vi
+        .mocked(Logger.warn)
+        .mock.calls.filter((c) => String(c[0]).includes('Reconnect within cooldown'));
+      expect(warnCalls).toHaveLength(1);
+
+      // Storm summary fires when the incumbent finally goes away.
+      incumbent.readyState = WS_CLOSED;
+      incumbent._emitClose();
+
+      const summaryCalls = vi
+        .mocked(Logger.info)
+        .mock.calls.filter((c) =>
+          String(c[0]).includes('Refused 25 reconnect challenger(s)'),
+        );
+      expect(summaryCalls).toHaveLength(1);
+    });
+
+    it('should emit the storm summary exactly once when an incumbent with refusals is evicted by a post-cooldown successor', () => {
+      // Regression: the explicit eviction path calls ws.close, which fires the
+      // 'close' event handler, which re-enters removeConnection. Without
+      // zeroing refusedChallengers, the summary INFO logged twice.
+      const incumbent = createMockWs();
+      service.addConnection(1, 'client-a', incumbent as any);
+
+      // Refuse a few challengers so refusedChallengers > 0 on this incumbent.
+      for (let i = 0; i < 3; i++) {
+        const challenger = createMockWs();
+        service.addConnection(1, 'client-a', challenger as any);
+      }
+      vi.mocked(Logger.info).mockClear();
+
+      // Quiet period expires the cooldown.
+      vi.advanceTimersByTime(5_000);
+
+      // Successor evicts the incumbent — explicit removeConnection (4009) is
+      // followed by the incumbent socket's own 'close' event re-entering
+      // removeConnection. Both passes share the same ConnectedClient.
+      const successor = createMockWs();
+      service.addConnection(1, 'client-a', successor as any);
+      incumbent._emitClose();
+
+      const summaryCalls = vi
+        .mocked(Logger.info)
+        .mock.calls.filter((c) =>
+          String(c[0]).includes('Refused 3 reconnect challenger(s)'),
+        );
+      expect(summaryCalls).toHaveLength(1);
+    });
+
+    it('should emit the storm summary exactly once when an incumbent with refusals is reaped by the heartbeat', () => {
+      // Regression: heartbeat-dead-connection removal also calls
+      // removeConnection -> ws.close -> 'close' event -> removeConnection
+      // re-entry. summaryLogged must dedupe that path too.
+      const incumbent = createMockWs();
+      service.addConnection(1, 'client-a', incumbent as any);
+
+      for (let i = 0; i < 4; i++) {
+        const challenger = createMockWs();
+        service.addConnection(1, 'client-a', challenger as any);
+      }
+      vi.mocked(Logger.info).mockClear();
+
+      service.startHeartbeat();
+      // Two ping cycles with no pong → heartbeat removes the incumbent.
+      vi.advanceTimersByTime(30_000);
+      vi.advanceTimersByTime(30_000);
+      // The heartbeat's ws.close() would in real ws fire the close handler,
+      // re-entering removeConnection.
+      incumbent._emitClose();
+
+      const summaryCalls = vi
+        .mocked(Logger.info)
+        .mock.calls.filter((c) =>
+          String(c[0]).includes('Refused 4 reconnect challenger(s)'),
+        );
+      expect(summaryCalls).toHaveLength(1);
+    });
+
+    it('should not emit a storm summary when no challengers were refused', () => {
+      const ws = createMockWs();
+      service.addConnection(1, 'client-a', ws as any);
+      vi.mocked(Logger.info).mockClear();
+
+      ws._emitClose();
+
+      const summaryCalls = vi
+        .mocked(Logger.info)
+        .mock.calls.filter((c) => String(c[0]).includes('Refused'));
+      expect(summaryCalls).toHaveLength(0);
     });
 
     it('should still enforce the cap across distinct clientIds', () => {

@@ -160,6 +160,7 @@ export class AppComponent implements OnDestroy, AfterViewInit {
   readonly isShowMobileButtonNav = this.layoutService.isShowMobileBottomNav;
 
   @ViewChild('routeWrapper', { read: ElementRef }) routeWrapper?: ElementRef<HTMLElement>;
+  @ViewChild(RouterOutlet) private _routerOutlet?: RouterOutlet;
 
   @HostBinding('class.isWorkViewScrolled') get isWorkViewScrolledClass(): boolean {
     return this.layoutService.isWorkViewScrolled();
@@ -401,6 +402,19 @@ export class AppComponent implements OnDestroy, AfterViewInit {
 
   getPage(outlet: RouterOutlet): string {
     return outlet.activatedRouteData.page || 'one';
+  }
+
+  /**
+   * The background context menu is scoped to the task-list / work-view routes
+   * (`tag/:id/tasks`, `project/:id/tasks`) so it never opens on unrelated pages
+   * like Habits or Config. See #7734.
+   */
+  isWorkViewPage(): boolean {
+    if (!this._routerOutlet) {
+      return false;
+    }
+    const page = this.getPage(this._routerOutlet);
+    return page === 'tag-tasks' || page === 'project-tasks';
   }
 
   getActiveWorkContextId(): string | null {

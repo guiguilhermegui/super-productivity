@@ -353,6 +353,11 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
     if (this._elementRef.nativeElement.closest('task-detail-panel')) {
       return;
     }
+    // Skip when focus came from clicking the toggle-detail-panel button itself —
+    // the click handler owns that action; running both inverts the toggle (#7694).
+    if (ev.target instanceof Element && ev.target.closest('.show-additional-info-btn')) {
+      return;
+    }
     const selectedTaskId = this._taskService.selectedTaskId();
     if (selectedTaskId && selectedTaskId !== this.task().id) {
       this._taskService.setSelectedId(this.task().id);

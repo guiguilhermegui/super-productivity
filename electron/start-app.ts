@@ -20,7 +20,7 @@ import {
   initializeProtocolHandling,
   processPendingProtocolUrls,
 } from './protocol-handler';
-import { getIsQuiting, setIsQuiting, setIsLocked } from './shared-state';
+import { getIsQuiting, setIsLocked, setIsMinimizeToTray } from './shared-state';
 import { clearStaleLevelDbLocks } from './clear-stale-idb-locks';
 import { evaluateGpuStartupGuard } from './gpu-startup-guard';
 import * as fs from 'fs';
@@ -432,11 +432,13 @@ export const startApp = (): void => {
       event.preventDefault();
       const win = getWin();
       if (win && !win.isDestroyed()) {
+        // Ensure the close handler takes the real close path (not the minimize-to-tray
+        // hide branch) so the before-close IPC flow (sync, finish-day) completes.
+        setIsMinimizeToTray(false);
         win.close();
       } else {
         // No window to close — set flag and re-trigger quit directly.
-        setIsQuiting(true);
-        app.quit();
+        quitApp();
       }
       return;
     }

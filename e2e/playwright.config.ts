@@ -72,6 +72,13 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('/')`. */
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:4242',
 
+    /*
+     * Pin the browser locale so navigator.language is deterministic across
+     * machines. The app's "System default" date/time locale follows
+     * navigator.language, and many tests assume en-GB (DD/MM/YYYY, 24h).
+     */
+    locale: 'en-GB',
+
     /* Configure downloads to go to test output directory, not ~/Downloads */
     downloadsPath: path.join(__dirname, '..', '.tmp', 'e2e-test-results', 'downloads'),
 

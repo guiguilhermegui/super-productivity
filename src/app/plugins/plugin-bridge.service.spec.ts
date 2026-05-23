@@ -567,6 +567,7 @@ describe('PluginBridgeService', () => {
 // Active tests for setCounter fix (issue #5812)
 import { TestBed } from '@angular/core/testing';
 import { MockStore, provideMockStore } from '@ngrx/store/testing';
+import { of } from 'rxjs';
 import { PluginBridgeService } from './plugin-bridge.service';
 import { selectAllSimpleCounters } from '../features/simple-counter/store/simple-counter.reducer';
 import {
@@ -633,7 +634,9 @@ describe('PluginBridgeService - Counter Methods', () => {
         { provide: MatDialog, useValue: {} },
         { provide: PluginHooksService, useValue: {} },
         { provide: TaskService, useValue: {} },
-        { provide: WorkContextService, useValue: {} },
+        // activeWorkContext$ must be a real Observable — the constructor
+        // reads it via toSignal() at construction time.
+        { provide: WorkContextService, useValue: { activeWorkContext$: of(null) } },
         { provide: ProjectService, useValue: {} },
         { provide: TagService, useValue: {} },
         { provide: PluginUserPersistenceService, useValue: {} },
@@ -843,7 +846,7 @@ describe('PluginBridgeService - dispatchAction privacy (#7619)', () => {
         { provide: MatDialog, useValue: {} },
         { provide: PluginHooksService, useValue: {} },
         { provide: TaskService, useValue: {} },
-        { provide: WorkContextService, useValue: {} },
+        { provide: WorkContextService, useValue: { activeWorkContext$: of(null) } },
         { provide: ProjectService, useValue: {} },
         { provide: TagService, useValue: {} },
         { provide: PluginUserPersistenceService, useValue: {} },

@@ -62,9 +62,9 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-sha
 # Install dependencies and generate Prisma client in single layer
 # Note: prisma CLI installed explicitly for runtime migrate deploy
 # IMPORTANT: prisma version must match @prisma/client in package.json
-RUN npm install ./sync-core.tgz ./shared-schema.tgz --ignore-scripts && \
+RUN npm install ./sync-core.tgz ./shared-schema.tgz --ignore-scripts --omit=dev && \
     npm install --ignore-scripts --omit=dev && \
-    npm install prisma@5.22.0 --ignore-scripts && \
+    npm install prisma@5.22.0 --ignore-scripts --omit=dev && \
     npx prisma generate && \
     rm -f sync-core.tgz shared-schema.tgz && \
     npm cache clean --force

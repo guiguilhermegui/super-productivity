@@ -1,7 +1,24 @@
+import {
+  SUPER_SYNC_CLIENT_ID_REGEX,
+  SUPER_SYNC_MAX_CLIENT_ID_LENGTH,
+} from '@sp/shared-schema';
+
 export {
   SUPER_SYNC_CLIENT_ID_REGEX as CLIENT_ID_REGEX,
   SUPER_SYNC_MAX_CLIENT_ID_LENGTH as MAX_CLIENT_ID_LENGTH,
 } from '@sp/shared-schema';
+
+/**
+ * Type-guard for clientId validation. Order matters: cheap length check first
+ * so an attacker passing a multi-megabyte clientId is rejected before the
+ * regex scans it. The regex already requires `+` (≥1 char), so an explicit
+ * non-empty check is redundant. Used by the WS route handler AND the
+ * rate-limit keyGenerator — keep both call sites in sync via this helper.
+ */
+export const isValidClientId = (cid: unknown): cid is string =>
+  typeof cid === 'string' &&
+  cid.length <= SUPER_SYNC_MAX_CLIENT_ID_LENGTH &&
+  SUPER_SYNC_CLIENT_ID_REGEX.test(cid);
 
 /**
  * Approximate bytes-per-op used when decrementing `users.storage_used_bytes`

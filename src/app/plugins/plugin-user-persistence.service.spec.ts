@@ -55,28 +55,52 @@ describe('PluginUserPersistenceService', () => {
       expect(dispatchSpy).not.toHaveBeenCalled();
     });
 
-    it('should throw error when called too frequently (rate limiting)', () => {
+    it('should coalesce a rapid second call instead of dropping it', () => {
       const baseTime = Date.now();
       jasmine.clock().install();
       jasmine.clock().mockDate(new Date(baseTime));
       try {
         const pluginId = 'test-plugin';
-        const data = 'test data';
 
-        // First call should succeed
-        service.persistPluginUserData(pluginId, data);
+        // First call commits immediately.
+        service.persistPluginUserData(pluginId, 'first');
         expect(dispatchSpy).toHaveBeenCalledTimes(1);
 
-        // Immediate second call should fail
-        expect(() => service.persistPluginUserData(pluginId, data)).toThrowError(
-          /Plugin data persist rate limited/,
-        );
+        // A call inside the rate-limit window must not throw and must not be
+        // dropped — it is held until the window opens.
+        expect(() => service.persistPluginUserData(pluginId, 'second')).not.toThrow();
         expect(dispatchSpy).toHaveBeenCalledTimes(1);
 
-        // After waiting MIN_PLUGIN_PERSIST_INTERVAL_MS, should succeed again
+        // Once the interval elapses the held write is committed.
         jasmine.clock().tick(MIN_PLUGIN_PERSIST_INTERVAL_MS);
-        service.persistPluginUserData(pluginId, data);
         expect(dispatchSpy).toHaveBeenCalledTimes(2);
+        expect(dispatchSpy).toHaveBeenCalledWith(
+          upsertPluginUserData({
+            pluginUserData: { id: pluginId, data: 'second' },
+          }),
+        );
+      } finally {
+        jasmine.clock().uninstall();
+      }
+    });
+
+    it('should keep only the most recent of several coalesced calls', () => {
+      const baseTime = Date.now();
+      jasmine.clock().install();
+      jasmine.clock().mockDate(new Date(baseTime));
+      try {
+        const pluginId = 'test-plugin';
+
+        service.persistPluginUserData(pluginId, 'v1'); // committed
+        service.persistPluginUserData(pluginId, 'v2'); // coalesced
+        service.persistPluginUserData(pluginId, 'v3'); // coalesced, replaces v2
+        expect(dispatchSpy).toHaveBeenCalledTimes(1);
+
+        jasmine.clock().tick(MIN_PLUGIN_PERSIST_INTERVAL_MS);
+        expect(dispatchSpy).toHaveBeenCalledTimes(2);
+        expect(dispatchSpy).toHaveBeenCalledWith(
+          upsertPluginUserData({ pluginUserData: { id: pluginId, data: 'v3' } }),
+        );
       } finally {
         jasmine.clock().uninstall();
       }
@@ -125,6 +149,27 @@ describe('PluginUserPersistenceService', () => {
 
       expect(result).toBeNull();
     });
+
+    it('should return a pending coalesced write before it is committed', async () => {
+      const baseTime = Date.now();
+      jasmine.clock().install();
+      jasmine.clock().mockDate(new Date(baseTime));
+      try {
+        const pluginId = 'test-plugin';
+        store.overrideSelector(selectPluginUserDataFeatureState, [
+          { id: pluginId, data: 'committed' },
+        ]);
+
+        service.persistPluginUserData(pluginId, 'committed'); // commits
+        service.persistPluginUserData(pluginId, 'pending'); // coalesced
+
+        // A read-modify-write cycle must see its own not-yet-committed write.
+        const result = await service.loadPluginUserData(pluginId);
+        expect(result).toBe('pending');
+      } finally {
+        jasmine.clock().uninstall();
+      }
+    });
   });
 
   describe('removePluginUserData', () => {
@@ -134,6 +179,26 @@ describe('PluginUserPersistenceService', () => {
       service.removePluginUserData(pluginId);
 
       expect(dispatchSpy).toHaveBeenCalledWith(deletePluginUserData({ pluginId }));
+    });
+
+    it('should cancel a pending coalesced write', () => {
+      const baseTime = Date.now();
+      jasmine.clock().install();
+      jasmine.clock().mockDate(new Date(baseTime));
+      try {
+        const pluginId = 'test-plugin';
+        service.persistPluginUserData(pluginId, 'first'); // commits
+        service.persistPluginUserData(pluginId, 'pending'); // coalesced
+
+        service.removePluginUserData(pluginId);
+        dispatchSpy.calls.reset();
+
+        // The cancelled flush must not resurrect the removed data.
+        jasmine.clock().tick(MIN_PLUGIN_PERSIST_INTERVAL_MS * 2);
+        expect(dispatchSpy).not.toHaveBeenCalled();
+      } finally {
+        jasmine.clock().uninstall();
+      }
     });
   });
 

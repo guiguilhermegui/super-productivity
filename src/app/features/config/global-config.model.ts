@@ -268,6 +268,7 @@ export type FocusModeConfig = Readonly<{
    * Kept on the type so old persisted configs deserialize without errors.
    */
   isStartInBackground?: boolean;
+  /** Note: Controls Pomodoro overtime only (keeps timer running until manually ended) */
   isManualBreakStart?: boolean;
 }>;
 

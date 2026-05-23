@@ -181,6 +181,13 @@ export const taskReducer = createReducer<TaskState>(
   }),
 
   on(TimeTrackingActions.addTimeSpent, (state, { task, date, duration }) => {
+    // NaN/Infinity → JSON.stringify → null → auto-fix zeroes the day. Catch source.
+    if (!Number.isFinite(duration)) {
+      devError(
+        `addTimeSpent: non-finite duration for task ${task.id} on ${date}: ${duration}`,
+      );
+      return state;
+    }
     const currentTimeSpentForTickDay =
       (task.timeSpentOnDay && +task.timeSpentOnDay[date]) || 0;
     return updateTimeSpentForTask(
@@ -206,6 +213,12 @@ export const taskReducer = createReducer<TaskState>(
     const task = state.entities[taskId];
     if (!task) {
       TaskLog.warn(`[syncTimeSpent] Task ${taskId} not found, skipping`);
+      return state;
+    }
+    if (!Number.isFinite(duration)) {
+      devError(
+        `syncTimeSpent (remote): non-finite duration for task ${taskId} on ${date}: ${duration}`,
+      );
       return state;
     }
 

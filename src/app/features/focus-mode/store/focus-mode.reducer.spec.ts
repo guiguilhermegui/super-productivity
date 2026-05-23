@@ -672,6 +672,7 @@ describe('FocusModeReducer', () => {
       const startTime = Date.now();
       const flowtimeState = {
         ...initialState,
+        mode: FocusModeMode.Flowtime,
         timer: {
           isRunning: true,
           startedAt: startTime,

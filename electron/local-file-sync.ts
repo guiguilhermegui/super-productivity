@@ -45,11 +45,10 @@ export const initLocalFileSyncAdapter = (): void => {
 
         const stat = await fs.promises.stat(normalized);
 
-        // 200 KB limit
-        const MAX_FILE_SIZE = 200 * 1024;
+        const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
         if (stat.size > MAX_FILE_SIZE) {
-          throw new Error('Background image exceeds 200 KB limit');
+          throw new Error('Background image exceeds 5 MB limit');
         }
 
         const buffer = await fs.promises.readFile(normalized);

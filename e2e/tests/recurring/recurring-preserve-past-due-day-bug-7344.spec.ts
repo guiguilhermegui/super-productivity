@@ -1,4 +1,5 @@
 import { expect, test } from '../../fixtures/test.fixture';
+import { waitForStatePersistence } from '../../utils/waits';
 
 /**
  * Bug: https://github.com/super-productivity/super-productivity/issues/7344
@@ -85,6 +86,10 @@ test.describe('Recurring Task - preserve past dueDay (#7344)', () => {
     //    Before the fix: task.dueDay was auto-shifted to 2027-04-01 and the
     //    task disappeared from Today. After the fix: task.dueDay is preserved
     //    at 2026-04-01 (past, still overdue) and the task stays visible.
+    //    Flush the op-log IndexedDB writes from the Save above before reload —
+    //    otherwise the in-flight transaction races the next bootstrap and can
+    //    stall the navigation `domcontentloaded` event past 30s.
+    await waitForStatePersistence(page);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await workViewPage.waitForTaskList();
     await expect(taskPage.getTaskByText(taskTitle).first()).toBeVisible({

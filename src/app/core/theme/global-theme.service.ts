@@ -645,20 +645,52 @@ export class GlobalThemeService {
     const vv = window.visualViewport;
     if (!vv) return;
     const root = this.document.documentElement;
-    // Filter out small differences that come from URL bar / overlay UI
-    // rather than the IME — keeps us from setting a phantom keyboard offset.
+    // Filter out small differences from URL bar / overlay UI rather than the
+    // IME — keeps us from setting a phantom keyboard offset.
     const KEYBOARD_THRESHOLD_PX = 100;
+    // IME open/close on Android resizes the layout viewport (adjustResize)
+    // and the visual viewport at slightly different times, so per-event
+    // commits park fixed-position UI (e.g. the global add-task bar) at
+    // intermediate partial-keyboard amounts. Debounce the OPEN path so only
+    // the final value lands (200ms, just past `--transition-duration-m`:
+    // 225ms). Commit the CLOSE path synchronously so the bar drops the moment
+    // the IME is gone rather than parking at the old height for the debounce
+    // window — that would just invert the original symptom.
+    const KEYBOARD_RESIZE_DEBOUNCE_MS = 200;
+    let resizeTimer: number | null = null;
 
-    const update = (): void => {
+    const commit = (): void => {
       const obscured = window.innerHeight - vv.height;
       const keyboardHeight = obscured > KEYBOARD_THRESHOLD_PX ? obscured : 0;
       root.style.setProperty(CSS_VAR_KEYBOARD_HEIGHT, `${keyboardHeight}px`);
     };
 
-    update();
-    vv.addEventListener('resize', update, { passive: true });
+    const onViewportResize = (): void => {
+      const obscured = window.innerHeight - vv.height;
+      if (obscured <= KEYBOARD_THRESHOLD_PX) {
+        if (resizeTimer !== null) {
+          window.clearTimeout(resizeTimer);
+          resizeTimer = null;
+        }
+        commit();
+        return;
+      }
+      if (resizeTimer !== null) {
+        window.clearTimeout(resizeTimer);
+      }
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        commit();
+      }, KEYBOARD_RESIZE_DEBOUNCE_MS);
+    };
+
+    commit();
+    vv.addEventListener('resize', onViewportResize, { passive: true });
     this._destroyRef.onDestroy(() => {
-      vv.removeEventListener('resize', update);
+      vv.removeEventListener('resize', onViewportResize);
+      if (resizeTimer !== null) {
+        window.clearTimeout(resizeTimer);
+      }
     });
   }
 

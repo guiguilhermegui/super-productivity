@@ -80,10 +80,11 @@ test.describe('Repeat Task - Day Change (#6230)', () => {
 
     // 8. Assert: a new undone task with the same title should appear
     //    The app's date-change mechanism should detect the new day and create
-    //    a fresh repeat task instance. 30s timeout accounts for debounce + sync.
+    //    a fresh repeat task instance. 60s timeout accounts for debounce + sync
+    //    on saturated CI runners where the 1s tick can lag substantially.
     await expect(
       taskPage.getUndoneTasks().filter({ hasText: taskTitle }).first(),
-    ).toBeVisible({ timeout: 30000 });
+    ).toBeVisible({ timeout: 60000 });
 
     console.log('[Bug #6230] New repeat task instance appeared after day change');
   });

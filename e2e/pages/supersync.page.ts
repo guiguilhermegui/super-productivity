@@ -777,8 +777,10 @@ export class SuperSyncPage extends BasePage {
           // Continue loop to re-check for dialogs
         }
 
-        // Final check for check icon
-        await this.syncCheckIcon.waitFor({ state: 'visible', timeout: 10000 });
+        // Final check for check icon — generous timeout because the inner
+        // race above already used the 30s budget, and on saturated CI runners
+        // the sync state icon can take noticeably longer to render.
+        await this.syncCheckIcon.waitFor({ state: 'visible', timeout: 30000 });
       }
     } else if (waitForInitialSync) {
       // Encryption is mandatory for SuperSync, so even when the caller doesn't

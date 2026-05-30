@@ -178,10 +178,13 @@ jobs:
         shell: bash
 
       - name: Set up Ruby and fastlane
-        # Pinned by SHA per repo policy; installs the locked Bundler/gems and
-        # caches them so the ~210-gem fastlane tree isn't reinstalled each run.
+        # Pinned by SHA per repo policy. ruby-version is required: with no
+        # .ruby-version file in the repo the action errors out rather than
+        # using system Ruby. bundler-cache runs `bundle install` and caches the
+        # ~210-gem fastlane tree so it isn't reinstalled each run.
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f # latest
         with:
+          ruby-version: '3.3'
           bundler-cache: true
 
       - name: Prepare App Store release notes

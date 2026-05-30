@@ -21,9 +21,11 @@ lane (`fastlane/Fastfile`, `ios release` / `mac release`) that:
    `altool --validate-app` step).
 2. Pushes only the "What's New" release notes (derived from
    `build/release-notes.md` by `tools/prepare-appstore-release-notes.js`). The
-   lane sets `skip_metadata`/`skip_screenshots`, so all other listing fields
-   (description, keywords, screenshots, …) curated by hand in App Store Connect
-   are **not** read back or overwritten.
+   lane points `metadata_path` at a dir containing **only**
+   `<locale>/release_notes.txt`; deliver reads just that file and skips every
+   other field (no remote read-back), so the description, keywords, screenshots,
+   … curated by hand in App Store Connect are left untouched. (`skip_metadata`
+   is intentionally **not** set — it would make deliver upload no notes at all.)
 3. Waits for App Store Connect to finish processing the build.
 4. Submits the version for review with **automatic release on approval**.
 

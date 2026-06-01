@@ -20,22 +20,30 @@
 > - ✅ **Phase B step 1 — DI:** both services inject `OP_LOG_DB_ADAPTER_FACTORY`
 >   (a factory token; each service gets its own adapter). `adoptConnection` is
 >   now an optional, IDB-only bridge method on the interface.
-> - ✅ **Phase B step 2 (skeleton) — `SqliteOpLogAdapter`:** dependency-free
->   schema→table planning + DDL (`planTables`/`buildDdl`), `init()` applies it
->   to a minimal `SqliteDb` port; query methods throw a loud not-implemented
->   error. 12 specs cover the mapping. The native plugin is intentionally NOT a
->   dependency yet — see "Open decisions" below.
-> - ⏳ Remaining for Phase B: implement the `SqliteOpLogAdapter` query/tx
->   methods, add `@capacitor-community/sqlite` + a `SqliteDb` wrapper, and
->   override `OP_LOG_DB_ADAPTER_FACTORY` to return it when native. The other
->   small IDB consumers (theme, credential, oauth, client-id) are out of the
->   data-loss scope (Phase D).
+> - ✅ **Phase B step 2 — `SqliteOpLogAdapter` (fully implemented):**
+>   dependency-free schema→table planning + DDL (`planTables`/`buildDdl`),
+>   value→column extraction, all query/index/range/count methods, cursor
+>   `iterate` (incl. keyed + delete), and `BEGIN/COMMIT/ROLLBACK` transactions
+>   with rollback-on-throw and SQLite→`DOMException` error mapping
+>   (UNIQUE→ConstraintError, disk-full→QuotaExceededError). Talks only to a
+>   minimal `SqliteDb` port, so no native dependency. 23 specs validate the
+>   translation layer + transaction semantics against an in-memory SQLite
+>   stand-in.
+> - ⏳ Remaining for Phase B: add `@capacitor-community/sqlite` + a thin
+>   `SqliteDb` wrapper over its `SQLiteDBConnection`, override
+>   `OP_LOG_DB_ADAPTER_FACTORY` to return `SqliteOpLogAdapter` when native, and
+>   run this adapter once against a REAL SQLite engine on-device (the in-memory
+>   fake validates translation, not SQLite itself). The other small IDB
+>   consumers (theme, credential, oauth, client-id) are out of the data-loss
+>   scope (Phase D).
 >
 > **Open decisions (need on-device validation):**
 >
 > - Adding `@capacitor-community/sqlite` is a native dependency that can't be
->   validated in CI (its web build is WASM-on-IndexedDB, not the native path).
->   Defer until it can be tested on a real device.
+>   validated in CI (its web build is WASM-on-IndexedDB, not the native path;
+>   sql.js's universal build statically imports `node:` modules webpack can't
+>   bundle for Karma). Defer the plugin + on-device run to a device-capable
+>   environment.
 > - Consider shipping the cheap #7892 safeguards independently and sooner:
 >   diagnostic logging of `navigator.storage.persist()` result on native, and a
 >   periodic Capacitor Filesystem auto-backup (a second copy outside the

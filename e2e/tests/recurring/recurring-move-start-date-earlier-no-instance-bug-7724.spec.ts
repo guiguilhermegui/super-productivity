@@ -66,10 +66,45 @@ const setStartDate = async (page: Page, ddmmyyyy: string): Promise<void> => {
     .locator('input')
     .first();
   await expect(startDateInput).toBeVisible({ timeout: 5000 });
-  await startDateInput.fill('');
-  await startDateInput.fill(ddmmyyyy);
+  // The Material datepicker input occasionally drops the first fill while the
+  // dialog is still binding/animating (the field is left empty + ng-invalid).
+  // Retry the fill until the value sticks before committing it with Tab.
+  await expect(async () => {
+    await startDateInput.fill('');
+    await startDateInput.fill(ddmmyyyy);
+    await expect(startDateInput).toHaveValue(ddmmyyyy, { timeout: 1000 });
+  }).toPass({ timeout: 10000 });
   await startDateInput.press('Tab');
   await expect(startDateInput).toHaveValue(ddmmyyyy, { timeout: 3000 });
+};
+
+/**
+ * Navigate to a hash route reliably. Playwright's page.goto only mutates the
+ * URL fragment for SPA hash routes, and Angular's router occasionally drops
+ * that hashchange when goto lands mid-bootstrap — leaving the previous view
+ * mounted (e.g. the work-view stays on "Today" instead of switching to the
+ * Inbox project) and sometimes rewriting the fragment back to the old route.
+ * When the expected marker doesn't render, hop through about:blank so the next
+ * goto is a cross-document load that bootstraps the app fresh on the target
+ * URL and reads the fragment on init.
+ */
+const gotoHashRoute = async (
+  page: Page,
+  route: string,
+  marker: Locator,
+): Promise<void> => {
+  await page.goto(route);
+  await page.waitForLoadState('networkidle');
+  const landed = await marker
+    .waitFor({ state: 'visible', timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!landed) {
+    await page.goto('about:blank');
+    await page.goto(route);
+    await page.waitForLoadState('networkidle');
+    await expect(marker).toBeVisible({ timeout: 15000 });
+  }
 };
 
 const saveDialog = async (page: Page): Promise<void> => {
@@ -107,12 +142,18 @@ test.describe('Recurring Task - Move Start Date Earlier With No Live Instance (#
     //    task has dueDay = May 4; the Inbox project view lists it regardless of
     //    due day. A plain task delete does NOT touch the repeat config's
     //    lastTaskCreationDay or deletedInstanceDates.
-    await page.goto('/#/project/INBOX_PROJECT/tasks');
-    await page.waitForLoadState('networkidle');
     const taskRows = page.locator('task').filter({ hasText: taskTitle });
-    await expect(taskRows.first()).toBeVisible({ timeout: 15000 });
-    await taskRows.first().click({ button: 'right' });
-    await page.locator('.mat-mdc-menu-content button.color-warn').click();
+    await gotoHashRoute(page, '/#/project/INBOX_PROJECT/tasks', taskRows.first());
+    // The task list can still be settling (entry animation / re-render) right
+    // after navigation, so a single right-click occasionally races the
+    // "stable" check. Retry opening the context menu with a short per-attempt
+    // timeout until it appears.
+    const contextMenu = page.locator('.mat-mdc-menu-content');
+    await expect(async () => {
+      await taskRows.first().click({ button: 'right', timeout: 4000 });
+      await expect(contextMenu).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 20000 });
+    await contextMenu.locator('button.color-warn').click();
     const confirmBtn = page.locator('[e2e="confirmBtn"]');
     await expect(confirmBtn).toBeVisible({ timeout: 5000 });
     await confirmBtn.click();
@@ -120,8 +161,11 @@ test.describe('Recurring Task - Move Start Date Earlier With No Live Instance (#
 
     // 3. Re-open the repeat config from a transparent projection and move
     //    startDate to May 2 — earlier than the stale anchor (May 4).
-    await page.goto('/#/planner');
-    await page.waitForLoadState('networkidle');
+    await gotoHashRoute(
+      page,
+      '/#/planner',
+      page.locator('planner-repeat-projection').filter({ hasText: taskTitle }).first(),
+    );
     await openRecurDialogFromProjection(page, taskTitle);
     await setStartDate(page, '02/05/2026');
     await saveDialog(page);
@@ -129,8 +173,7 @@ test.describe('Recurring Task - Move Start Date Earlier With No Live Instance (#
     // 4. Verify: the task now projects onto May 2, 3 and 4 — the days the stale
     //    anchor used to suppress. May 5 is the control (it projected pre-fix
     //    too). No live instance was recreated, so every day is a projection.
-    await page.goto('/#/planner');
-    await page.waitForLoadState('networkidle');
+    await gotoHashRoute(page, '/#/planner', page.locator('planner-day').first());
 
     for (const date of [/^2\/5$/, /^3\/5$/, /^4\/5$/, /^5\/5$/]) {
       const day = page

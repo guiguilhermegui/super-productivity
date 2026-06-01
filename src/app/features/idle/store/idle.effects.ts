@@ -48,6 +48,7 @@ import { isNotNullOrUndefined } from '../../../util/is-not-null-or-undefined';
 import { DialogConfirmComponent } from '../../../ui/dialog-confirm/dialog-confirm.component';
 import { T } from '../../../t.const';
 import { DateService } from '../../../core/date/date.service';
+import { splitTimeSpentByDay } from '../../../util/split-time-spent-by-day';
 import { ipcIdleTime$ } from '../../../core/ipc-events';
 import { selectIsSessionRunning } from '../../focus-mode/store/focus-mode.selectors';
 import {
@@ -335,17 +336,23 @@ export class IdleEffects {
             (item: IdleTrackItem) => item.type === 'TASK',
           );
           let taskItemId: string | undefined;
+          const startOfNextDayDiff = this._dateService.getStartOfNextDayDiffMs();
           taskItems.forEach((taskItem) => {
+            // Split across days so an idle interval crossing midnight is logged
+            // for each day it actually covers, not all onto today (issue #3888).
+            const timeSpentOnDay = splitTimeSpentByDay(
+              Date.now(),
+              taskItem.time,
+              startOfNextDayDiff,
+            );
             if (typeof taskItem.title === 'string') {
               taskItemId = this._taskService.add(taskItem.title, false, {
                 timeSpent: taskItem.time,
-                timeSpentOnDay: {
-                  [this._dateService.todayStr()]: taskItem.time,
-                },
+                timeSpentOnDay,
               });
             } else if (taskItem.task) {
               taskItemId = taskItem.task.id;
-              this._taskService.addTimeSpentAndSync(taskItem.task, taskItem.time);
+              this._taskService.addTimeSpentForDays(taskItem.task, timeSpentOnDay);
             }
           });
 

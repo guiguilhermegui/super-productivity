@@ -843,6 +843,50 @@ describe('TaskService', () => {
     });
   });
 
+  describe('addTimeSpentForDays', () => {
+    const TODAY = '2026-06-01';
+    const YESTERDAY = '2026-05-31';
+
+    it('threads the running map so earlier days are not overwritten (#3888)', () => {
+      const existing: { [d: string]: number } = {};
+      existing[TODAY] = 1000;
+      const task = createMockTask('task-1', { timeSpentOnDay: existing });
+      (store.dispatch as jasmine.Spy).calls.reset();
+
+      const split: { [d: string]: number } = {};
+      split[TODAY] = 8000;
+      split[YESTERDAY] = 6000;
+      service.addTimeSpentForDays(task, split);
+
+      const addCalls: { type: string; date: string; duration: number; task: Task }[] = (
+        store.dispatch as jasmine.Spy
+      ).calls
+        .allArgs()
+        .map(([a]: any) => a)
+        .filter((a: { type: string }) => a.type === '[TimeTracking] Add time spent');
+
+      expect(addCalls.length).toBe(2);
+      // First dispatch (today): payload carries the original map.
+      expect(addCalls[0].date).toBe(TODAY);
+      expect(addCalls[0].duration).toBe(8000);
+      expect(addCalls[0].task.timeSpentOnDay[TODAY]).toBe(1000);
+      // Second dispatch (yesterday): payload MUST carry the first day's addition,
+      // else the reducer (which merges onto the payload map) resets today (#3888).
+      expect(addCalls[1].date).toBe(YESTERDAY);
+      expect(addCalls[1].duration).toBe(6000);
+      expect(addCalls[1].task.timeSpentOnDay[TODAY]).toBe(1000 + 8000);
+    });
+
+    it('does nothing for an empty map', () => {
+      const task = createMockTask('task-1');
+      (store.dispatch as jasmine.Spy).calls.reset();
+
+      service.addTimeSpentForDays(task, {});
+
+      expect(store.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('removeTimeSpent', () => {
     it('should dispatch removeTimeSpent action', () => {
       service.removeTimeSpent('task-1', 30000);

@@ -820,6 +820,88 @@ describe('Task Reducer', () => {
       expect(state.entities['parent']!.timeSpentOnDay['2024-01-01']).toBe(1500);
       expect(state.entities['parent']!.timeSpent).toBe(1500);
     });
+
+    // Guards the reducer contract that TaskService.addTimeSpentForDays relies on:
+    // addTimeSpent merges onto the action PAYLOAD's timeSpentOnDay, so a
+    // cross-midnight idle split must thread the running map through each per-day
+    // dispatch. These tests replay that exact two-dispatch sequence (#3888).
+    it('preserves both days for a threaded cross-midnight split (flat task, #3888)', () => {
+      const task = createTaskWithTime('t', { '2026-06-01': 1000 });
+      const state0: TaskState = {
+        ...initialTaskState,
+        ids: ['t'],
+        entities: { t: task },
+      };
+
+      // Dispatch 1 (today, +8000) — payload is the original snapshot.
+      const state1 = taskReducer(
+        state0,
+        TimeTrackingActions.addTimeSpent({
+          task,
+          date: '2026-06-01',
+          duration: 8000,
+          isFromTrackingReminder: false,
+        }),
+      );
+      // Dispatch 2 (yesterday, +6000) — payload threads today's addition forward.
+      const threaded: Task = {
+        ...task,
+        timeSpentOnDay: { ...task.timeSpentOnDay, '2026-06-01': 9000 },
+      };
+      const state2 = taskReducer(
+        state1,
+        TimeTrackingActions.addTimeSpent({
+          task: threaded,
+          date: '2026-05-31',
+          duration: 6000,
+          isFromTrackingReminder: false,
+        }),
+      );
+
+      expect(state2.entities['t']!.timeSpentOnDay['2026-06-01']).toBe(9000);
+      expect(state2.entities['t']!.timeSpentOnDay['2026-05-31']).toBe(6000);
+      expect(state2.entities['t']!.timeSpent).toBe(15000);
+    });
+
+    it('aggregates both days on the parent for a threaded cross-midnight subtask split (#3888)', () => {
+      const parent = createTaskWithTime('parent', { '2026-06-01': 1000 });
+      const sub = createTaskWithTime('sub', { '2026-06-01': 1000 }, 'parent');
+      const state0: TaskState = {
+        ...initialTaskState,
+        ids: ['parent', 'sub'],
+        entities: { parent: { ...parent, subTaskIds: ['sub'] }, sub },
+      };
+
+      const state1 = taskReducer(
+        state0,
+        TimeTrackingActions.addTimeSpent({
+          task: sub,
+          date: '2026-06-01',
+          duration: 8000,
+          isFromTrackingReminder: false,
+        }),
+      );
+      const threadedSub: Task = {
+        ...sub,
+        timeSpentOnDay: { ...sub.timeSpentOnDay, '2026-06-01': 9000 },
+      };
+      const state2 = taskReducer(
+        state1,
+        TimeTrackingActions.addTimeSpent({
+          task: threadedSub,
+          date: '2026-05-31',
+          duration: 6000,
+          isFromTrackingReminder: false,
+        }),
+      );
+
+      expect(state2.entities['sub']!.timeSpentOnDay['2026-06-01']).toBe(9000);
+      expect(state2.entities['sub']!.timeSpentOnDay['2026-05-31']).toBe(6000);
+      // Parent picks up both days with no double-count.
+      expect(state2.entities['parent']!.timeSpentOnDay['2026-06-01']).toBe(9000);
+      expect(state2.entities['parent']!.timeSpentOnDay['2026-05-31']).toBe(6000);
+      expect(state2.entities['parent']!.timeSpent).toBe(15000);
+    });
   });
 
   describe('moveToArchive action - orphan subtask handling', () => {

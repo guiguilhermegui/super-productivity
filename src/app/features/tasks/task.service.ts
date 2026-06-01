@@ -826,13 +826,41 @@ export class TaskService {
    * Use this instead of addTimeSpent when the caller is NOT using BatchedTimeSyncAccumulator
    * (e.g. idle dialog, tracking reminder). The tick path uses the accumulator instead.
    */
-  addTimeSpentAndSync(task: Task, duration: number): void {
+  addTimeSpentAndSync(
+    task: Task,
+    duration: number,
+    date: string = this._dateService.todayStr(),
+  ): void {
     if (duration <= 0) {
       return;
     }
-    const date = this._dateService.todayStr();
     this.addTimeSpent(task, duration, date);
     this._store.dispatch(syncTimeSpent({ taskId: task.id, date, duration }));
+  }
+
+  /**
+   * Adds time spent across multiple days for a single task (e.g. an idle
+   * interval that crossed midnight, see issue #3888).
+   *
+   * Each per-day dispatch must carry forward the previous days' additions: the
+   * addTimeSpent reducer merges onto `task.timeSpentOnDay` from the *action
+   * payload* (not store state), so reusing one stale snapshot would make every
+   * iteration overwrite the prior day's update. We thread an updated snapshot
+   * through the loop so each dispatch sees the accumulated map.
+   */
+  addTimeSpentForDays(task: Task, timeSpentByDay: { [dateStr: string]: number }): void {
+    let runningTask = task;
+    Object.keys(timeSpentByDay).forEach((date) => {
+      const duration = timeSpentByDay[date];
+      this.addTimeSpentAndSync(runningTask, duration, date);
+      runningTask = {
+        ...runningTask,
+        timeSpentOnDay: {
+          ...runningTask.timeSpentOnDay,
+          [date]: (runningTask.timeSpentOnDay?.[date] ?? 0) + duration,
+        },
+      };
+    });
   }
 
   removeTimeSpent(

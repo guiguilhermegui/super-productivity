@@ -51,6 +51,10 @@
 > - Gate after each group: 170 store unit + 3 archive unit + 367 op-log
 >   integration specs green.
 
+> **Follow-up backlog:** the actionable, ordered list of what remains (the
+> near-term #7892 safeguards, the native SQLite wiring, and data migration)
+> lives in [`sqlite-migration-followup.md`](./sqlite-migration-followup.md).
+
 ## 0. Goal & non-goal
 
 **Goal:** On **native (Capacitor iOS/Android)**, move the op-log persistence off

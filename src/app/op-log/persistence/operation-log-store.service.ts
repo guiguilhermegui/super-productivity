@@ -32,7 +32,8 @@ import {
   isLockRelatedIdbOpenError,
 } from './op-log-errors.const';
 import { runDbUpgrade } from './db-upgrade';
-import { IndexedDbOpLogAdapter } from './indexed-db-op-log-adapter';
+import { OpLogDbAdapter } from './op-log-db-adapter';
+import { OP_LOG_DB_ADAPTER_FACTORY } from './op-log-db-adapter.token';
 import { Log } from '../../core/log';
 import {
   IDB_OPEN_RETRIES,
@@ -208,7 +209,8 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
   private _initPromise?: Promise<void>;
   // Phase A migration seam: methods migrated off direct `idb` route through
   // this adapter, which operates on the SAME connection adopted in init().
-  private readonly _adapter = new IndexedDbOpLogAdapter();
+  // Phase B: the backend (IndexedDB vs SQLite) comes from DI.
+  private readonly _adapter: OpLogDbAdapter = inject(OP_LOG_DB_ADAPTER_FACTORY)();
 
   // Cache for getAppliedOpIds() to avoid full table scans on every download
   private _appliedOpIdsCache: Set<string> | null = null;
@@ -229,7 +231,7 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
       );
       this._db = undefined;
       this._initPromise = undefined;
-      this._adapter.adoptConnection(undefined);
+      this._adapter.adoptConnection?.(undefined);
     });
     // A newer tab is upgrading SUP_OPS (a future schema bump). Close now so this
     // connection does not block the upgrade; the next access reopens
@@ -238,12 +240,12 @@ export class OperationLogStoreService implements RemoteOperationApplyStorePort<O
       db.close();
       this._db = undefined;
       this._initPromise = undefined;
-      this._adapter.adoptConnection(undefined);
+      this._adapter.adoptConnection?.(undefined);
     });
     this._db = db;
     // Route already-migrated methods through the shared adapter on this same
     // connection (Phase A incremental migration; see indexed-db-op-log-adapter).
-    this._adapter.adoptConnection(db as unknown as IDBPDatabase);
+    this._adapter.adoptConnection?.(db);
   }
 
   /**

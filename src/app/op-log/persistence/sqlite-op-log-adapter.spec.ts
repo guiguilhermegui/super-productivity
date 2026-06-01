@@ -114,9 +114,11 @@ class FakeSqliteDb implements SqliteDb {
     const upsert = /ON CONFLICT/i.test(sql);
     const uniq = this.uniqueCols.get(table) ?? [];
 
-    // PK conflict (key tables): upsert or replace.
-    if ('key' in row) {
-      const existing = rows.find((r) => r['key'] === row['key']);
+    // Primary-key conflict — either an explicit `key` (keyPath/keyless stores)
+    // or an explicitly-supplied `seq` (ops put() carrying a round-tripped key).
+    const pkCol = 'key' in row ? 'key' : 'seq' in row ? 'seq' : undefined;
+    if (pkCol) {
+      const existing = rows.find((r) => r[pkCol] === row[pkCol]);
       if (existing) {
         if (upsert) {
           Object.assign(existing, row);
@@ -131,7 +133,8 @@ class FakeSqliteDb implements SqliteDb {
         throw new Error(`UNIQUE constraint failed: ${table}.${uc}`);
       }
     }
-    if (!('key' in row)) {
+    // Assign an autoincrement seq only when none was supplied.
+    if (!('key' in row) && !('seq' in row)) {
       const next = (this.autoinc.get(table) ?? 0) + 1;
       this.autoinc.set(table, next);
       row['seq'] = next;
@@ -155,7 +158,11 @@ class FakeSqliteDb implements SqliteDb {
     return { changes: before - kept.length };
   }
 
-  /** Apply the single `col OP ?` / `a = ? AND b = ?` WHERE shapes we emit. */
+  /**
+   * Apply the `col OP ?` / `a = ? AND b = ?` / `col IS NOT NULL` shapes we emit,
+   * modeling SQLite's NULL semantics: a comparison involving NULL yields NULL
+   * (treated as not-true), so a NULL cell never matches `=`/`>=`/etc.
+   */
   private applyWhere(rows: Row[], sql: string, params: unknown[], invert = false): Row[] {
     const w = /WHERE (.+?)(?: ORDER BY| LIMIT|$)/i.exec(sql);
     if (!w) return rows;
@@ -163,21 +170,29 @@ class FakeSqliteDb implements SqliteDb {
     let pi = 0;
     const test = (r: Row): boolean =>
       conds.every((cond) => {
+        const isNotNull = /^(\w+) IS NOT NULL$/i.exec(cond);
+        if (isNotNull) {
+          return r[isNotNull[1]] != null;
+        }
         const mm = /(\w+) (>=|<=|>|<|=) \?/.exec(cond)!;
         const [, col, op] = mm;
         const val = params[pi++] as string | number | null;
         const cell = r[col];
+        // SQLite: any comparison with NULL is NULL (not true).
+        if (cell == null || val == null) {
+          return false;
+        }
         switch (op) {
           case '=':
             return cell === val;
           case '>':
-            return (cell as number) > (val as number);
+            return cell > val;
           case '>=':
-            return (cell as number) >= (val as number);
+            return cell >= val;
           case '<':
-            return (cell as number) < (val as number);
+            return cell < val;
           case '<=':
-            return (cell as number) <= (val as number);
+            return cell <= val;
           default:
             return false;
         }
@@ -196,8 +211,12 @@ class FakeSqliteDb implements SqliteDb {
     return [...rows].sort((a, b) => {
       for (const term of terms) {
         const [col, dir] = term.split(/\s+/);
-        const av = a[col] as number;
-        const bv = b[col] as number;
+        const av = a[col];
+        const bv = b[col];
+        // SQLite orders NULLs first in ASC.
+        if (av == null && bv == null) continue;
+        if (av == null) return dir === 'DESC' ? 1 : -1;
+        if (bv == null) return dir === 'DESC' ? -1 : 1;
         if (av !== bv) return (av < bv ? -1 : 1) * (dir === 'DESC' ? -1 : 1);
       }
       return 0;
@@ -289,6 +308,50 @@ describe('SqliteOpLogAdapter', () => {
     expect(s2).toBe(s1 + 1);
     const got = await adapter.get<{ op: { id: string } }>(STORE_NAMES.OPS, s1);
     expect(got?.op.id).toBe('a');
+  });
+
+  // Regression: the autoincrement `seq` must appear on read-back, the way IDB's
+  // inline keyPath round-trips it. decodeStoredEntry/clearUnsyncedOps read
+  // `entry.seq`; if it's missing those silently no-op.
+  it('get()/getAll()/getFromIndex() include the autoincrement seq on read', async () => {
+    const s1 = await adapter.add(STORE_NAMES.OPS, makeOpEntry('a', 'local'));
+    const byKey = await adapter.get<{ seq: number; op: { id: string } }>(
+      STORE_NAMES.OPS,
+      s1,
+    );
+    expect(byKey?.seq).toBe(s1);
+    const byIndex = await adapter.getFromIndex<{ seq: number }>(
+      STORE_NAMES.OPS,
+      OPS_INDEXES.BY_ID,
+      'a',
+    );
+    expect(byIndex?.seq).toBe(s1);
+    const all = await adapter.getAll<{ seq: number }>(STORE_NAMES.OPS);
+    expect(all[0].seq).toBe(s1);
+  });
+
+  // Regression: put() on the autoincrement ops store must UPDATE in place
+  // (carrying the round-tripped seq), not insert a duplicate that violates the
+  // unique op_id index. This is the markSynced/markRejected/markFailed pattern.
+  it('put() on the ops store updates the existing row in place (markSynced pattern)', async () => {
+    const seq = await adapter.add(STORE_NAMES.OPS, makeOpEntry('a', 'local'));
+    const entry = await adapter.get<Record<string, unknown>>(STORE_NAMES.OPS, seq);
+    entry!['syncedAt'] = 123;
+    await adapter.put(STORE_NAMES.OPS, entry); // no throw, no duplicate
+    expect(await adapter.count(STORE_NAMES.OPS)).toBe(1);
+    const after = await adapter.get<{ syncedAt: number; seq: number }>(
+      STORE_NAMES.OPS,
+      seq,
+    );
+    expect(after?.syncedAt).toBe(123);
+    expect(after?.seq).toBe(seq);
+    // the JSON value column must not have absorbed the seq (stays the bare entry)
+    const byIndex = await adapter.getFromIndex<{ op: { id: string } }>(
+      STORE_NAMES.OPS,
+      OPS_INDEXES.BY_ID,
+      'a',
+    );
+    expect(byIndex?.op.id).toBe('a');
   });
 
   it('seq keeps climbing after clear() (AUTOINCREMENT, never reused)', async () => {
@@ -405,6 +468,37 @@ describe('SqliteOpLogAdapter', () => {
     expect(seen.map((x) => x.id)).toEqual(['c', 'b', 'a']);
     expect(seen[0].key).toBe(s3);
     expect(seen[2].key).toBe(s1);
+  });
+
+  // Regression: iterating an index must skip rows whose indexed key is NULL,
+  // matching IDB's "index omits undefined-keyed records" semantics. Otherwise
+  // hasSyncedOps (iterates bySyncedAt) would visit never-synced local ops
+  // (synced_at NULL) and wrongly report sync history on a fresh client.
+  it('iterate over an index skips rows with a NULL indexed key', async () => {
+    // local ops have no syncedAt (NULL); a remote/synced op does.
+    await adapter.add(STORE_NAMES.OPS, makeOpEntry('local1', 'local'));
+    await adapter.add(STORE_NAMES.OPS, makeOpEntry('synced', 'remote', 'applied', 999));
+    await adapter.add(STORE_NAMES.OPS, makeOpEntry('local2', 'local'));
+    const seen: string[] = [];
+    await adapter.iterate<{ op: { id: string } }>(
+      STORE_NAMES.OPS,
+      { index: OPS_INDEXES.BY_SYNCED_AT, mode: 'readonly' },
+      (v) => {
+        seen.push(v.op.id);
+        return 'continue';
+      },
+    );
+    expect(seen).toEqual(['synced']); // the two NULL-synced_at local ops are skipped
+  });
+
+  it('getAllFromIndex skips NULL-keyed rows (index-omits-undefined)', async () => {
+    await adapter.add(STORE_NAMES.OPS, makeOpEntry('local1', 'local'));
+    await adapter.add(STORE_NAMES.OPS, makeOpEntry('synced', 'remote', 'applied', 999));
+    const res = await adapter.getAllFromIndex<{ op: { id: string } }>(
+      STORE_NAMES.OPS,
+      OPS_INDEXES.BY_SYNCED_AT,
+    );
+    expect(res.map((r) => r.op.id)).toEqual(['synced']);
   });
 
   it('readonly iterate does not open a transaction', async () => {
@@ -541,6 +635,39 @@ describe('SqliteOpLogAdapter', () => {
       return { byId: byId?.op.id, count: all.length, ids: ids.sort() };
     });
     expect(out).toEqual({ byId: 'r1', count: 2, ids: ['r1', 'r2'] });
+  });
+
+  // ── guards & error paths ───────────────────────────────────────────────────
+
+  it('rejects a non-exact compound-key range (per-column AND != tuple compare)', async () => {
+    await expectAsync(
+      adapter.getAllFromIndex(STORE_NAMES.OPS, OPS_INDEXES.BY_SOURCE_AND_STATUS, {
+        lower: ['remote', 'applied'],
+        upper: ['remote', 'pending'],
+      }),
+    ).toBeRejectedWithError(/compound-key ranges are not supported/i);
+  });
+
+  it('guards against an unknown store (synchronous) and unknown index (rejects)', async () => {
+    // `_plan` runs synchronously in the method body → throws.
+    expect(() => adapter.get('not_a_store', 1)).toThrowError(/unknown store/i);
+    // `indexPlan` runs inside the async SQL helper → rejects.
+    await expectAsync(
+      adapter.getFromIndex(STORE_NAMES.OPS, 'not_an_index', 'x'),
+    ).toBeRejectedWithError(/unknown index/i);
+  });
+
+  it('maps a SQLITE_FULL error to QuotaExceededError', async () => {
+    const failing: SqliteDb = {
+      run: async () => {
+        throw new Error('database or disk is full (SQLITE_FULL)');
+      },
+      query: async () => [],
+    };
+    const a = new SqliteOpLogAdapter(failing);
+    await expectAsync(a.add(STORE_NAMES.OPS, makeOpEntry('x', 'local'))).toBeRejectedWith(
+      jasmine.objectContaining({ name: 'QuotaExceededError' }),
+    );
   });
 
   it('does not implement adoptConnection (SQLite self-manages its handle)', () => {

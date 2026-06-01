@@ -71,7 +71,7 @@ eviction cannot touch.
 
 ### B2. Validate `SqliteOpLogAdapter` against a real engine
 
-The current 23 specs use an in-memory stand-in that validates the _translation
+The current 27 specs use an in-memory stand-in that validates the _translation
 layer_, not SQLite itself.
 
 - **Do:** run the adapter once against a real engine. Two options:
@@ -84,7 +84,24 @@ layer_, not SQLite itself.
   both adapters" gate) — catches autoincrement/unique/range/atomicity gaps the
   stand-in can't.
 - **Size:** medium. **Risk:** medium — this is where real-SQLite surprises
-  surface (collation/ordering of TEXT keys, NULL handling in compound ranges).
+  surface. Specific things the in-memory stand-in cannot prove, to assert on a
+  real engine:
+  - **TEXT collation**: `op_id`/`key` order under SQLite `BINARY` vs IDB's
+    UTF-16 code-unit order (agree for ASCII/UUIDs; diverge for
+    supplementary-plane chars).
+  - **Compound-key ranges**: `whereRange` decomposes a compound range into
+    per-column `AND`ed comparisons, which is **not** IDB's lexicographic tuple
+    comparison. Only equal-bounds (exact-match) compound ranges are used today
+    (`['remote','pending']`), where the two coincide; a genuine compound range
+    would be wrong. Guard or fix before relying on one.
+  - **JSON round-trip**: `JSON.stringify` drops `undefined` keys and would
+    mangle `Date`/`Map`/`Set`/`NaN`. Op payloads are expected JSON-safe (they
+    sync as JSON); worth an explicit invariant since IDB structured-clone has
+    silently tolerated non-JSON values.
+  - **`lastId` contract**: the on-device `SqliteDb` wrapper MUST return the
+    just-executed INSERT's rowid synchronously (prefer `INSERT … RETURNING seq`)
+    — a deferred `SELECT last_insert_rowid()` is clobbered by an intervening
+    INSERT.
 
 ### B3. Flip the DI token on native
 

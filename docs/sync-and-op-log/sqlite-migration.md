@@ -26,7 +26,7 @@
 >   `iterate` (incl. keyed + delete), and `BEGIN/COMMIT/ROLLBACK` transactions
 >   with rollback-on-throw and SQLite→`DOMException` error mapping
 >   (UNIQUE→ConstraintError, disk-full→QuotaExceededError). Talks only to a
->   minimal `SqliteDb` port, so no native dependency. 23 specs validate the
+>   minimal `SqliteDb` port, so no native dependency. 27 specs validate the
 >   translation layer + transaction semantics against an in-memory SQLite
 >   stand-in.
 > - ⏳ Remaining for Phase B: add `@capacitor-community/sqlite` + a thin
@@ -88,7 +88,7 @@ non-evictable; only a full _Clear storage_ or uninstall removes it.
 - **Prior art:** the legacy `pfapi` layer injected an `IndexedDbAdapter` behind a
   `DBAdapter` interface (`src/app/pfapi/api/pfapi.js`). Same _pattern_, revived
   for the op-log system.
-- **Critical DB is `SUP_OPS`** (9 stores). Other IDB databases (`SUPThemes`,
+- **Critical DB is `SUP_OPS`** (8 stores). Other IDB databases (`SUPThemes`,
   `sup-sync`, `sup-plugin-oauth`, legacy `pf`) are cosmetic / re-acquirable /
   read-only-migration and are out of scope for the data-loss fix.
 - **Atomicity is the hard part**, not CRUD. Two methods need single-transaction
@@ -139,7 +139,7 @@ through — shaped around the operations the store needs, with a **callback-base
    - Map SQLite errors → the same `StorageQuotaExceededError` / duplicate-op
      errors the rest of the system expects.
 3. **DI wiring:** bind `OpLogDbAdapter` to `SqliteOpLogAdapter` when
-   `platformService.isNative`, else `IndexedDbOpLogAdapter`. One token, one
+   `IS_NATIVE_PLATFORM`, else `IndexedDbOpLogAdapter`. One token, one
    factory; the store doesn't know which backend it has.
 
 ### Phase C — One-time data migration (native, first launch after update)

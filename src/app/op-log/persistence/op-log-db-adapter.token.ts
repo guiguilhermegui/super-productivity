@@ -18,7 +18,7 @@ export type OpLogDbAdapterFactory = () => OpLogDbAdapter;
  * see docs/sync-and-op-log/sqlite-migration.md).
  *
  * Defaults to IndexedDB on every platform. Phase B will override this provider
- * to return a `SqliteOpLogAdapter` when `PlatformService.isNative`, leaving the
+ * to return a `SqliteOpLogAdapter` when `IS_NATIVE_PLATFORM`, leaving the
  * stores untouched — they only know `OpLogDbAdapter`.
  */
 export const OP_LOG_DB_ADAPTER_FACTORY = new InjectionToken<OpLogDbAdapterFactory>(

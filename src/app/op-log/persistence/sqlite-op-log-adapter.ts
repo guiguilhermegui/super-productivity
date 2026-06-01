@@ -4,9 +4,9 @@
  *
  * This file talks to the minimal {@link SqliteDb} port rather than importing
  * `@capacitor-community/sqlite` directly, so it has NO native dependency and is
- * unit-testable against any SQLite engine (the spec drives it with sql.js). A
- * thin wrapper over the plugin's `SQLiteDBConnection` satisfies the port on
- * device.
+ * unit-testable without one (the spec drives it with an in-memory `SqliteDb`
+ * stand-in; a real-engine pass is a follow-up — see the migration doc). A thin
+ * wrapper over the plugin's `SQLiteDBConnection` satisfies the port on device.
  *
  * ──────────────────────────────────────────────────────────────────────────
  * Generic table model
@@ -88,8 +88,8 @@ export interface SqlTablePlan {
 /**
  * Minimal async SQLite surface this adapter needs. A thin wrapper over
  * `@capacitor-community/sqlite`'s `SQLiteDBConnection` satisfies it on device;
- * tests provide a fake backed by sql.js. Kept here (not imported from the
- * plugin) so this file has no native dependency.
+ * tests provide an in-memory fake. Kept here (not imported from the plugin) so
+ * this file has no native dependency.
  */
 export interface SqliteDb {
   /** Run a statement with no result set (DDL, INSERT/UPDATE/DELETE). */
@@ -217,21 +217,45 @@ interface InsertPlan {
   params: (string | number | null)[];
 }
 
-/** Build the column/param lists for inserting `value` into `plan`. */
+/**
+ * Build the column/param lists for inserting `value` into `plan`.
+ *
+ * `includePk` controls the autoincrement (`ops`) primary key:
+ * - `add()` passes `false` → `seq` is omitted so SQLite assigns a fresh one.
+ * - `put()` passes `true` → if the value carries a `seq` (round-tripped from a
+ *   prior read), it's written so `ON CONFLICT(seq)` updates that row in place
+ *   rather than inserting a duplicate (which would also violate UNIQUE op_id).
+ * The `seq` is NOT part of the JSON `value` (the value stays the bare entry),
+ * mirroring IDB's inline-keyPath split between the key and the stored object.
+ */
 const buildInsert = (
   plan: SqlTablePlan,
   value: unknown,
-  explicitKey?: DbKey,
+  opts: { explicitKey?: DbKey; includePk?: boolean } = {},
 ): InsertPlan => {
   const columns: string[] = [];
   const params: (string | number | null)[] = [];
   if (plan.primaryKey === 'key') {
-    const key = plan.keyJsonPath ? extractPath(value, plan.keyJsonPath) : explicitKey;
+    const key = plan.keyJsonPath
+      ? extractPath(value, plan.keyJsonPath)
+      : opts.explicitKey;
     columns.push(KEY_COLUMN);
     params.push(toSqlValue(key));
+  } else if (opts.includePk) {
+    const seq = (value as Record<string, unknown>)?.[SEQ_COLUMN];
+    if (seq != null) {
+      columns.push(SEQ_COLUMN);
+      params.push(toSqlValue(seq));
+    }
   }
+  // The stored JSON never carries the autoincrement `seq` (it lives in its own
+  // column); strip it so the value round-trips byte-identically across writes.
+  const valueForJson =
+    plan.primaryKey === 'autoinc' && isRecord(value) && SEQ_COLUMN in value
+      ? stripKey(value, SEQ_COLUMN)
+      : value;
   columns.push(VALUE_COLUMN);
-  params.push(JSON.stringify(value));
+  params.push(JSON.stringify(valueForJson));
   for (const ic of plan.indexColumns) {
     columns.push(ic.column);
     params.push(toSqlValue(extractPath(value, ic.jsonPath)));
@@ -239,10 +263,36 @@ const buildInsert = (
   return { columns, params };
 };
 
-const decodeRow = <T>(row: Record<string, unknown>): T =>
-  JSON.parse(row[VALUE_COLUMN] as string) as T;
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null;
 
-/** Map a sql.js error to the DOMException name the store's catch blocks expect. */
+const stripKey = (v: Record<string, unknown>, key: string): Record<string, unknown> => {
+  const rest = { ...v };
+  delete rest[key];
+  return rest;
+};
+
+/**
+ * Decode a row's JSON `value` back to the stored object.
+ *
+ * For the autoincrement (`ops`) store the primary key lives only in the `seq`
+ * column, not in the JSON (the inserted entry is `Omit<…, 'seq'>`). IndexedDB,
+ * by contrast, uses an *inline* keyPath, so a read there returns the object
+ * WITH `seq`. We reproduce that by splicing the `seq` column back onto the
+ * decoded object whenever it was selected — otherwise consumers like
+ * `decodeStoredEntry`/`clearUnsyncedOps` that read `entry.seq` would see
+ * `undefined`. The query must alias the pk column to `seq` (or select it
+ * directly) for this to populate.
+ */
+const decodeRow = <T>(plan: SqlTablePlan, row: Record<string, unknown>): T => {
+  const decoded = JSON.parse(row[VALUE_COLUMN] as string) as Record<string, unknown>;
+  if (plan.primaryKey === 'autoinc' && row[SEQ_COLUMN] != null) {
+    decoded[SEQ_COLUMN] = row[SEQ_COLUMN];
+  }
+  return decoded as T;
+};
+
+/** Map a SQLite error to the DOMException name the store's catch blocks expect. */
 const mapSqliteError = (e: unknown): never => {
   const msg = e instanceof Error ? e.message : String(e);
   if (/UNIQUE constraint failed/i.test(msg)) {
@@ -264,7 +314,16 @@ const whereExact = (
   return { clause, params: keys.map(toSqlValue) };
 };
 
-/** WHERE fragment for a {@link DbKeyRange} against one or more columns. */
+/**
+ * WHERE fragment for a {@link DbKeyRange} against one or more columns.
+ *
+ * COMPOUND-KEY LIMITATION: across multiple columns this ANDs an independent
+ * comparison per column, which only equals IndexedDB's lexicographic *tuple*
+ * comparison when the bounds are an exact match (lower == upper, the
+ * `bySourceAndStatus` exact-match queries used today). A genuine compound range
+ * (lower != upper across >1 column) would silently return the wrong rows, so we
+ * throw instead. Single-column ranges are exact.
+ */
 const whereRange = (
   columns: string[],
   range?: DbKeyRange,
@@ -280,6 +339,15 @@ const whereRange = (
     : range.upper != null
       ? [range.upper]
       : [];
+  if (
+    columns.length > 1 &&
+    !(lowers.length === uppers.length && lowers.every((v, i) => v === uppers[i]))
+  ) {
+    throw new Error(
+      'SqliteOpLogAdapter: non-exact compound-key ranges are not supported ' +
+        '(per-column AND != lexicographic tuple comparison). See whereRange.',
+    );
+  }
   const parts: string[] = [];
   const params: (string | number | null)[] = [];
   columns.forEach((col, i) => {
@@ -297,6 +365,27 @@ const whereRange = (
 
 const whereClause = (clause: string): string => (clause ? ` WHERE ${clause}` : '');
 
+/**
+ * Append an `IS NOT NULL` guard on the index's first column to an existing
+ * clause. IndexedDB indexes do not contain records whose indexed keyPath is
+ * undefined, so an index scan/iterate must skip NULL-keyed rows — without this,
+ * e.g. `hasSyncedOps` (which iterates `bySyncedAt`) would visit never-synced
+ * local ops whose `synced_at` is NULL and wrongly report sync history.
+ */
+const andNotNull = (clause: string, indexCols: string[]): string => {
+  const notNull = `${indexCols[0]} IS NOT NULL`;
+  return clause ? `${clause} AND ${notNull}` : notNull;
+};
+
+/**
+ * Columns to SELECT for a value read. For autoincrement stores we also fetch
+ * `seq` so {@link decodeRow} can splice it back onto the decoded object (IDB's
+ * inline-keyPath behavior). Keyless/keyPath stores carry their key inside the
+ * JSON already, so `value` alone suffices.
+ */
+const valueSelect = (plan: SqlTablePlan): string =>
+  plan.primaryKey === 'autoinc' ? `${SEQ_COLUMN}, ${VALUE_COLUMN}` : VALUE_COLUMN;
+
 // ── SQL operations (shared by the adapter and its transaction) ───────────────
 //
 // Every method takes a SqliteDb so the same code serves both the adapter
@@ -307,7 +396,8 @@ const sqlAdd = async (
   plan: SqlTablePlan,
   value: unknown,
 ): Promise<number> => {
-  const { columns, params } = buildInsert(plan, value);
+  // add() never supplies the autoincrement key — SQLite assigns it.
+  const { columns, params } = buildInsert(plan, value, { includePk: false });
   const sql = `INSERT INTO ${plan.table} (${columns.join(', ')}) VALUES (${columns
     .map(() => '?')
     .join(', ')})`;
@@ -325,8 +415,12 @@ const sqlPut = async (
   value: unknown,
   key?: DbKey,
 ): Promise<void> => {
-  const { columns, params } = buildInsert(plan, value, key);
-  const updateCols = columns.filter((c) => c !== KEY_COLUMN);
+  const { columns, params } = buildInsert(plan, value, {
+    explicitKey: key,
+    includePk: true,
+  });
+  // Conflict target is the primary key; never overwrite it in the UPDATE.
+  const updateCols = columns.filter((c) => c !== KEY_COLUMN && c !== SEQ_COLUMN);
   const sql =
     `INSERT INTO ${plan.table} (${columns.join(', ')}) VALUES (${columns
       .map(() => '?')
@@ -347,10 +441,10 @@ const sqlGet = async <T>(
   key: DbKey,
 ): Promise<T | undefined> => {
   const rows = await db.query(
-    `SELECT ${VALUE_COLUMN} FROM ${plan.table} WHERE ${plan.pkColumn} = ? LIMIT 1`,
+    `SELECT ${valueSelect(plan)} FROM ${plan.table} WHERE ${plan.pkColumn} = ? LIMIT 1`,
     [toSqlValue(key)],
   );
-  return rows.length ? decodeRow<T>(rows[0]) : undefined;
+  return rows.length ? decodeRow<T>(plan, rows[0]) : undefined;
 };
 
 const sqlGetAll = async <T>(
@@ -360,10 +454,10 @@ const sqlGetAll = async <T>(
 ): Promise<T[]> => {
   const { clause, params } = whereRange([plan.pkColumn], range);
   const rows = await db.query(
-    `SELECT ${VALUE_COLUMN} FROM ${plan.table}${whereClause(clause)} ORDER BY ${plan.pkColumn} ASC`,
+    `SELECT ${valueSelect(plan)} FROM ${plan.table}${whereClause(clause)} ORDER BY ${plan.pkColumn} ASC`,
     params,
   );
-  return rows.map((r) => decodeRow<T>(r));
+  return rows.map((r) => decodeRow<T>(plan, r));
 };
 
 const sqlDelete = async (db: SqliteDb, plan: SqlTablePlan, key: DbKey): Promise<void> => {
@@ -406,10 +500,10 @@ const sqlGetFromIndex = async <T>(
   const idx = indexPlan(plan, indexName);
   const { clause, params } = whereExact(idx.columns, key);
   const rows = await db.query(
-    `SELECT ${VALUE_COLUMN} FROM ${plan.table} WHERE ${clause} LIMIT 1`,
+    `SELECT ${valueSelect(plan)} FROM ${plan.table} WHERE ${clause} LIMIT 1`,
     params,
   );
-  return rows.length ? decodeRow<T>(rows[0]) : undefined;
+  return rows.length ? decodeRow<T>(plan, rows[0]) : undefined;
 };
 
 const sqlGetKeyFromIndex = async (
@@ -434,16 +528,17 @@ const sqlGetAllFromIndex = async <T>(
   range?: DbKeyRange,
 ): Promise<T[]> => {
   const idx = indexPlan(plan, indexName);
-  const { clause, params } = whereRange(
-    idx.columns.map((c) => c.column),
-    range,
-  );
-  const order = idx.columns.map((c) => c.column).join(', ');
+  const cols = idx.columns.map((c) => c.column);
+  const { clause, params } = whereRange(cols, range);
+  // IndexedDB indexes omit records whose indexed keyPath is undefined; reproduce
+  // that by excluding rows where the (first) index column IS NULL.
+  const full = andNotNull(clause, cols);
+  const order = cols.join(', ');
   const rows = await db.query(
-    `SELECT ${VALUE_COLUMN} FROM ${plan.table}${whereClause(clause)} ORDER BY ${order} ASC`,
+    `SELECT ${valueSelect(plan)} FROM ${plan.table}${whereClause(full)} ORDER BY ${order} ASC`,
     params,
   );
-  return rows.map((r) => decodeRow<T>(r));
+  return rows.map((r) => decodeRow<T>(plan, r));
 };
 
 /**
@@ -470,6 +565,11 @@ const sqlIterate = async <T>(
     clause = ex.clause;
     params = ex.params;
   }
+  // Iterating an index must skip rows with a NULL indexed key, matching IDB's
+  // "index omits undefined-keyed records" semantics (see andNotNull).
+  if (options.index) {
+    clause = andNotNull(clause, orderCols);
+  }
 
   const rows = await db.query(
     `SELECT ${plan.pkColumn} AS __pk, ${VALUE_COLUMN} FROM ${plan.table}` +
@@ -479,7 +579,7 @@ const sqlIterate = async <T>(
 
   const toDelete: DbKey[] = [];
   for (const row of rows) {
-    const action: DbCursorAction = visit(decodeRow<T>(row), row['__pk'] as DbKey);
+    const action: DbCursorAction = visit(decodeRow<T>(plan, row), row['__pk'] as DbKey);
     if (action === 'delete' || action === 'delete-stop') {
       toDelete.push(row['__pk'] as DbKey);
     }

@@ -224,6 +224,28 @@ export class OperationLogSyncService {
         // to silent acceptance via this gate — the data is identical, only the
         // encryption changed.)
         if (dialogData) {
+          // Mirror the download gate: a never-synced client (lastServerSeq === 0)
+          // has only auto-generated bootstrap ops to "defend", so auto-accept remote
+          // instead of prompting or risking a server-wiping USE_LOCAL. See the
+          // download path for the full rationale.
+          if (await this._hasNeverSyncedFromRemote(syncProvider)) {
+            OpLog.warn(
+              `OperationLogSyncService: Piggybacked ${fullStateOp.opType} from client ` +
+                `${fullStateOp.clientId} on a never-synced client with ${pendingOps.length} ` +
+                `bootstrap op(s). Auto-accepting remote (no conflict dialog).`,
+            );
+            await this.forceDownloadRemoteState(syncProvider);
+            return {
+              kind: 'completed',
+              uploadedCount: result.uploadedCount,
+              piggybackedOpsCount: result.piggybackedOps.length,
+              localWinOpsCreated: 0,
+              permanentRejectionCount: 0,
+              hasMorePiggyback: false,
+              rejectedOps: [],
+            };
+          }
+
           OpLog.warn(
             `OperationLogSyncService: Piggybacked ${fullStateOp.opType} from client ${fullStateOp.clientId} ` +
               `with ${pendingOps.length} pending local ops. Showing conflict dialog.`,
@@ -661,6 +683,28 @@ export class OperationLogSyncService {
       // to silent acceptance via this gate — the data is identical, only the
       // encryption changed.)
       if (dialogData) {
+        // A client that has never completed a download from this remote
+        // (lastServerSeq === 0) cannot have meaningful divergent work to defend
+        // against an incoming full-state op. Its only "pending" ops are
+        // auto-generated bootstrap ops (e.g. default/onboarding tasks,
+        // addAllDueToday, default config writes) created before the first sync
+        // landed. Those ops make checkIncomingFullStateConflict misfire and would
+        // otherwise (a) show a confusing conflict dialog on a brand-new install and
+        // (b) offer a USE_LOCAL escape that force-uploads near-empty bootstrap state
+        // as a clean-slate SYNC_IMPORT, wiping the rest of the fleet's history.
+        // Auto-accept remote instead. (Genuine pre-op-log/offline data is handled
+        // earlier via the isWhollyFreshClient checks and never reaches this gate;
+        // and a normal populated server has no full-state op here at all.)
+        if (await this._hasNeverSyncedFromRemote(syncProvider)) {
+          OpLog.warn(
+            `OperationLogSyncService: Incoming ${fullStateOp.opType} from client ` +
+              `${fullStateOp.clientId} on a never-synced client with ${pendingOps.length} ` +
+              `bootstrap op(s). Auto-accepting remote (no conflict dialog).`,
+          );
+          await this.forceDownloadRemoteState(syncProvider);
+          return { kind: 'no_new_ops' };
+        }
+
         OpLog.warn(
           `OperationLogSyncService: Incoming ${fullStateOp.opType} from client ${fullStateOp.clientId} ` +
             `with ${pendingOps.length} pending local ops. Showing conflict dialog.`,
@@ -767,6 +811,26 @@ export class OperationLogSyncService {
   }
 
   /**
+   * True when this client has never completed a download from the remote
+   * (lastServerSeq === 0). Such a client cannot have meaningful divergent work to
+   * defend against an incoming full-state op — its only local ops are auto-generated
+   * bootstrap ops (example/onboarding tasks, default config writes) created before the
+   * first sync landed.
+   *
+   * Providers always implement getLastServerSeq(); if a provider omits it we
+   * conservatively treat the client as already-synced, so we never auto-discard local
+   * state or skip the conflict dialog based on a missing signal.
+   */
+  private async _hasNeverSyncedFromRemote(
+    syncProvider: OperationSyncCapable,
+  ): Promise<boolean> {
+    if (typeof syncProvider.getLastServerSeq !== 'function') {
+      return false;
+    }
+    return (await syncProvider.getLastServerSeq()) === 0;
+  }
+
+  /**
    * Shows the SYNC_IMPORT conflict dialog and executes the user's chosen action.
    *
    * This consolidates the repeated dialog + switch pattern used when a SYNC_IMPORT
@@ -803,6 +867,23 @@ export class OperationLogSyncService {
    * @param syncProvider - The sync provider to upload to
    */
   async forceUploadLocalState(syncProvider: OperationSyncCapable): Promise<void> {
+    // SAFETY (defense-in-depth): never let a client that has never downloaded from
+    // this remote (lastServerSeq === 0) AND has no meaningful local data force-upload
+    // its state. Doing so would replace the entire server with near-empty
+    // bootstrap/default state via a clean-slate SYNC_IMPORT and invalidate every other
+    // device's history. Genuine first-sync uploads of real local data have meaningful
+    // store data and are unaffected; the incoming-SYNC_IMPORT gate already auto-accepts
+    // remote for never-synced clients, so this should never trigger in practice.
+    const hasNeverSynced = await this._hasNeverSyncedFromRemote(syncProvider);
+    if (hasNeverSynced && !this.syncLocalStateService.hasMeaningfulStoreData()) {
+      OpLog.warn(
+        'OperationLogSyncService: Refusing forceUploadLocalState - never-synced client ' +
+          'with no meaningful local data would overwrite remote with empty state.',
+      );
+      throw new Error(
+        'Cannot force-upload empty local state before the first sync has downloaded remote data.',
+      );
+    }
     await this.syncImportConflictCoordinator.forceUploadLocalState(syncProvider);
   }
 

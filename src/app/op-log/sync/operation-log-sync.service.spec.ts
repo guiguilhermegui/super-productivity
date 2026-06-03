@@ -1602,6 +1602,51 @@ describe('OperationLogSyncService', () => {
         isCleanSlate: true,
       });
     });
+
+    it('should refuse to force-upload from a never-synced client with no meaningful data', async () => {
+      // Defense-in-depth: a never-synced client (lastServerSeq === 0) whose store holds
+      // only defaults/example data must not replace the entire server with empty state.
+      stateSnapshotServiceSpy.getStateSnapshot.and.returnValue({
+        task: { ids: [] },
+        project: { ids: [INBOX_PROJECT.id] },
+        tag: { ids: [TODAY_TAG.id] },
+        note: { ids: [] },
+      } as any);
+
+      const mockProvider = {
+        supportsOperationSync: true,
+        getLastServerSeq: jasmine.createSpy('getLastServerSeq').and.resolveTo(0),
+        setLastServerSeq: jasmine.createSpy('setLastServerSeq').and.resolveTo(),
+      } as any;
+
+      await expectAsync(
+        service.forceUploadLocalState(mockProvider),
+      ).toBeRejectedWithError(/never-synced|empty local state/i);
+      expect(serverMigrationServiceSpy.handleServerMigration).not.toHaveBeenCalled();
+    });
+
+    it('should allow force-upload from a never-synced client that has meaningful data', async () => {
+      // Genuine first-sync upload (e.g. legacy migration / real offline work) is allowed.
+      stateSnapshotServiceSpy.getStateSnapshot.and.returnValue({
+        task: { ids: ['real-task-1'] },
+        project: { ids: [INBOX_PROJECT.id] },
+        tag: { ids: [TODAY_TAG.id] },
+        note: { ids: [] },
+      } as any);
+
+      const mockProvider = {
+        supportsOperationSync: true,
+        getLastServerSeq: jasmine.createSpy('getLastServerSeq').and.resolveTo(0),
+        setLastServerSeq: jasmine.createSpy('setLastServerSeq').and.resolveTo(),
+      } as any;
+
+      await service.forceUploadLocalState(mockProvider);
+
+      expect(serverMigrationServiceSpy.handleServerMigration).toHaveBeenCalledWith(
+        mockProvider,
+        { skipServerEmptyCheck: true, syncImportReason: 'FORCE_UPLOAD' },
+      );
+    });
   });
 
   describe('forceDownloadRemoteState', () => {
@@ -2432,6 +2477,9 @@ describe('OperationLogSyncService', () => {
 
       const mockProvider = {
         supportsOperationSync: true,
+        // Established client (has synced before) — pending ops are real user work,
+        // so the conflict dialog must be shown.
+        getLastServerSeq: jasmine.createSpy('getLastServerSeq').and.resolveTo(7),
         setLastServerSeq: jasmine.createSpy('setLastServerSeq').and.resolveTo(),
       } as any;
 
@@ -2446,6 +2494,60 @@ describe('OperationLogSyncService', () => {
       expect(remoteOpsProcessingServiceSpy.processRemoteOps).not.toHaveBeenCalled();
       expect(mockProvider.setLastServerSeq).not.toHaveBeenCalled();
       expect(result.kind).toBe('cancelled');
+    });
+
+    it('should auto-accept remote (no dialog) for a never-synced client with bootstrap ops', async () => {
+      const incomingSyncImport = createIncomingSyncImport();
+
+      downloadServiceSpy.downloadRemoteOps.and.resolveTo({
+        newOps: [incomingSyncImport],
+        success: true,
+        providerMode: 'superSyncOps',
+        failedFileCount: 0,
+        latestServerSeq: 42,
+      });
+
+      // Brand-new client: its only pending op is an auto-generated example/onboarding
+      // task created before the first sync landed (ExampleTasksService). This makes
+      // hasMeaningfulPendingOps misfire, but the client has never downloaded anything.
+      opLogStoreSpy.getUnsynced.and.resolveTo([
+        {
+          seq: 1,
+          op: {
+            id: 'example-task-1',
+            clientId: 'client-A',
+            actionType: 'test' as ActionType,
+            opType: OpType.Create,
+            entityType: 'TASK',
+            entityId: 'task-1',
+            payload: { title: 'Set Up Sync' },
+            vectorClock: { clientA: 1 },
+            timestamp: Date.now(),
+            schemaVersion: 1,
+          },
+          appliedAt: Date.now(),
+          source: 'local',
+        },
+      ]);
+
+      const forceDownloadSpy = spyOn(service, 'forceDownloadRemoteState').and.resolveTo();
+
+      const mockProvider = {
+        supportsOperationSync: true,
+        // Never synced from this remote.
+        getLastServerSeq: jasmine.createSpy('getLastServerSeq').and.resolveTo(0),
+        setLastServerSeq: jasmine.createSpy('setLastServerSeq').and.resolveTo(),
+      } as any;
+
+      const result = await service.downloadRemoteOps(mockProvider);
+
+      // No conflict dialog, no force-upload — just take remote.
+      expect(
+        syncImportConflictDialogServiceSpy.showConflictDialog,
+      ).not.toHaveBeenCalled();
+      expect(forceDownloadSpy).toHaveBeenCalledWith(mockProvider);
+      expect(remoteOpsProcessingServiceSpy.processRemoteOps).not.toHaveBeenCalled();
+      expect(result.kind).toBe('no_new_ops');
     });
 
     it('should flush pending writes before checking incoming SYNC_IMPORT conflicts', async () => {

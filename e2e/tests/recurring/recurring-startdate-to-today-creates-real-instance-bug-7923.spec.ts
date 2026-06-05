@@ -1,5 +1,11 @@
-import { Locator, Page } from '@playwright/test';
 import { expect, test } from '../../fixtures/test.fixture';
+import {
+  gotoHashRoute,
+  openRecurDialog,
+  openRecurDialogFromProjection,
+  saveRecurDialog,
+  setRecurStartDate,
+} from '../../utils/recurring-task-helpers';
 
 /**
  * Bug: https://github.com/super-productivity/super-productivity/issues/7923
@@ -32,75 +38,6 @@ const FIXED_TODAY_DDMMYYYY = '01/05/2026';
 const FIXED_TODAY_DATA_DAY = '2026-05-01'; // planner-day[data-day] form of FIXED_TODAY
 const FUTURE_START_DDMMYYYY = '10/05/2026'; // today + 9 days
 
-const openRecurDialogFromProjection = async (
-  page: Page,
-  taskTitle: string,
-): Promise<Locator> => {
-  const projection = page
-    .locator('planner-repeat-projection')
-    .filter({ hasText: taskTitle })
-    .first();
-  await expect(projection).toBeVisible({ timeout: 15000 });
-  await projection.click();
-  const dialog = page.locator('mat-dialog-container');
-  await dialog.waitFor({ state: 'visible', timeout: 10000 });
-  return dialog;
-};
-
-const setStartDate = async (page: Page, ddmmyyyy: string): Promise<void> => {
-  const dialog = page.locator('mat-dialog-container');
-  const startDateInput = dialog
-    .locator('mat-form-field')
-    .filter({ hasText: /Start date/i })
-    .locator('input')
-    .first();
-  await expect(startDateInput).toBeVisible({ timeout: 5000 });
-  await expect(async () => {
-    await startDateInput.fill('');
-    await startDateInput.fill(ddmmyyyy);
-    await expect(startDateInput).toHaveValue(ddmmyyyy, { timeout: 1000 });
-  }).toPass({ timeout: 10000 });
-  await startDateInput.press('Tab');
-  await expect(startDateInput).toHaveValue(ddmmyyyy, { timeout: 3000 });
-};
-
-const gotoHashRoute = async (
-  page: Page,
-  route: string,
-  marker: Locator,
-): Promise<void> => {
-  await page.goto(route);
-  await page.waitForLoadState('networkidle');
-  const landed = await marker
-    .waitFor({ state: 'visible', timeout: 5000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!landed) {
-    await page.goto('about:blank');
-    await page.goto(route);
-    await page.waitForLoadState('networkidle');
-    await expect(marker).toBeVisible({ timeout: 15000 });
-  }
-};
-
-const saveDialog = async (page: Page): Promise<void> => {
-  const dialog = page.locator('mat-dialog-container');
-  const saveBtn = dialog.getByRole('button', { name: /Save/i });
-  await expect(saveBtn).toBeEnabled({ timeout: 5000 });
-  await saveBtn.click();
-  await dialog.waitFor({ state: 'hidden', timeout: 10000 });
-};
-
-const openRecurDialogFromTaskDetail = async (page: Page): Promise<void> => {
-  const recurItem = page
-    .locator('task-detail-item')
-    .filter({ has: page.locator('mat-icon', { hasText: /^repeat$/ }) });
-  await expect(recurItem).toBeVisible({ timeout: 5000 });
-  await recurItem.click();
-  const dialog = page.locator('mat-dialog-container');
-  await dialog.waitFor({ state: 'visible', timeout: 10000 });
-};
-
 test.describe('Recurring Task - Move startDate to Today Creates Real Instance (#7923)', () => {
   test('moving startDate to today with no live instance creates a real task in Today, not a projection', async ({
     page,
@@ -121,9 +58,9 @@ test.describe('Recurring Task - Move startDate to Today Creates Real Instance (#
     const task = taskPage.getTaskByText(taskTitle).first();
     await expect(task).toBeVisible({ timeout: 10000 });
     await taskPage.openTaskDetail(task);
-    await openRecurDialogFromTaskDetail(page);
-    await setStartDate(page, FUTURE_START_DDMMYYYY);
-    await saveDialog(page);
+    await openRecurDialog(page);
+    await setRecurStartDate(page, FUTURE_START_DDMMYYYY);
+    await saveRecurDialog(page);
 
     // 2. Delete the live (non-transparent) May 10 instance. The delete is a
     //    plain delete — it does NOT touch lastTaskCreationDay or
@@ -151,8 +88,8 @@ test.describe('Recurring Task - Move startDate to Today Creates Real Instance (#
       page.locator('planner-repeat-projection').filter({ hasText: taskTitle }).first(),
     );
     await openRecurDialogFromProjection(page, taskTitle);
-    await setStartDate(page, FIXED_TODAY_DDMMYYYY); // Move startDate → today
-    await saveDialog(page);
+    await setRecurStartDate(page, FIXED_TODAY_DDMMYYYY); // Move startDate → today
+    await saveRecurDialog(page);
 
     // 4. Navigate to the Today work-view and verify a REAL task was created.
     //    After the fix, rescheduleTaskOnRepeatCfgUpdate$ re-anchors

@@ -53,6 +53,7 @@ import { TODAY_TAG } from '../../features/tag/tag.const';
 import { TaskSummaryTablesComponent } from '../../features/tasks/task-summary-tables/task-summary-tables.component';
 import { Task, TaskWithSubTasks } from '../../features/tasks/task.model';
 import { TaskService } from '../../features/tasks/task.service';
+import { buildTaskWithSubTasks } from '../../features/tasks/util/task-tree.util';
 import { TasksByTagComponent } from '../../features/tasks/tasks-by-tag/tasks-by-tag.component';
 import { TaskArchiveService } from '../../features/archive/task-archive.service';
 import { WorkContextType } from '../../features/work-context/work-context.model';
@@ -559,52 +560,38 @@ export class DailySummaryComponent implements OnInit, OnDestroy, AfterViewInit {
       // to order sub tasks after their parents
       return filteredTasks
         .filter((task) => !task.parentId)
-        .map((task) =>
-          task.subTaskIds?.length
-            ? {
-                ...task,
-                subTasks: task.subTaskIds
-                  .map((tid) => taskState.entities[tid])
-                  .filter((t) => t),
-              }
-            : task,
-        ) as TaskWithSubTasks[];
+        .map((task) => buildTaskWithSubTasks(task, taskState.entities));
+    };
+
+    const _asFlatTask = (task: TaskWithSubTasks): TaskWithSubTasks => ({
+      ...task,
+      subTasks: [],
+    });
+
+    const _collectWorkedTree = (
+      task: TaskWithSubTasks,
+      isIncludeRepeatable: boolean,
+    ): TaskWithSubTasks[] => {
+      const subTasks = task.subTasks?.flatMap((st) =>
+        _collectWorkedTree(st, isIncludeRepeatable),
+      );
+      if (subTasks?.length) {
+        return [task, ...subTasks];
+      }
+      return _isWorkedOnDoneOrDueToday(task) ||
+        (isIncludeRepeatable && !!task.repeatCfgId)
+        ? [_asFlatTask(task)]
+        : [];
     };
 
     const _mapFilterToFlatToday = (tasks: TaskWithSubTasks[]): TaskWithSubTasks[] => {
-      let flatTasks: TaskWithSubTasks[] = [];
-      tasks.forEach((pt: TaskWithSubTasks) => {
-        if (pt.subTasks && pt.subTasks.length) {
-          const subTasks = pt.subTasks.filter((st) => _isWorkedOnDoneOrDueToday(st));
-          if (subTasks.length) {
-            flatTasks.push(pt);
-            flatTasks = flatTasks.concat(subTasks as TaskWithSubTasks[]);
-          }
-        } else if (_isWorkedOnDoneOrDueToday(pt)) {
-          flatTasks.push(pt);
-        }
-      });
-      return flatTasks;
+      return tasks.flatMap((pt: TaskWithSubTasks) => _collectWorkedTree(pt, false));
     };
 
     const _mapFilterToFlatOrRepeatToday = (
       tasks: TaskWithSubTasks[],
     ): TaskWithSubTasks[] => {
-      let flatTasks: TaskWithSubTasks[] = [];
-      tasks.forEach((pt: TaskWithSubTasks) => {
-        if (pt.subTasks && pt.subTasks.length) {
-          const subTasks: TaskWithSubTasks[] = pt.subTasks
-            .filter((st) => _isWorkedOnDoneOrDueToday(st))
-            .map((t) => ({ ...t, subTasks: [] }));
-          if (subTasks.length) {
-            flatTasks.push(pt);
-            flatTasks = flatTasks.concat(subTasks);
-          }
-        } else if (_isWorkedOnDoneOrDueToday(pt) || pt.repeatCfgId) {
-          flatTasks.push(pt);
-        }
-      });
-      return flatTasks;
+      return tasks.flatMap((pt: TaskWithSubTasks) => _collectWorkedTree(pt, true));
     };
 
     const archiveTasks: Observable<TaskWithSubTasks[]> = merge(

@@ -306,7 +306,7 @@ export class TaskReminderEffects {
         this._localActions$.pipe(
           ofType(TaskSharedActions.moveToArchive),
           tap(({ tasks }) => {
-            tasks.forEach((task) => {
+            const cancelForTask = (task: (typeof tasks)[number]): void => {
               try {
                 androidInterface.cancelNativeReminder?.(generateNotificationId(task.id));
                 androidInterface.cancelNativeReminder?.(
@@ -315,18 +315,9 @@ export class TaskReminderEffects {
               } catch (e) {
                 console.error('Failed to cancel native reminder:', e);
               }
-              // Also cancel for subtasks
-              task.subTaskIds?.forEach((subId) => {
-                try {
-                  androidInterface.cancelNativeReminder?.(generateNotificationId(subId));
-                  androidInterface.cancelNativeReminder?.(
-                    generateNotificationId(subId + '_deadline'),
-                  );
-                } catch (e) {
-                  console.error('Failed to cancel native reminder:', e);
-                }
-              });
-            });
+              task.subTasks?.forEach(cancelForTask);
+            };
+            tasks.forEach(cancelForTask);
           }),
         ),
       { dispatch: false },

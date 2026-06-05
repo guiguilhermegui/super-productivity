@@ -10,6 +10,7 @@ import { WorklogDataForDay, WorklogMonth, WorklogWeek } from './worklog.model';
 import { MatDialog } from '@angular/material/dialog';
 import { Task, TaskCopy } from '../tasks/task.model';
 import { TaskService } from '../tasks/task.service';
+import { getDescendantIds } from '../tasks/util/task-tree.util';
 import { DialogWorklogExportComponent } from './dialog-worklog-export/dialog-worklog-export.component';
 import { DialogConfirmComponent } from '../../ui/dialog-confirm/dialog-confirm.component';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -150,7 +151,7 @@ export class WorklogComponent implements AfterViewInit, OnDestroy {
           let subTasks;
           if (task.subTaskIds && task.subTaskIds.length) {
             const archiveState = await this._taskArchiveService.load();
-            subTasks = task.subTaskIds
+            subTasks = getDescendantIds(task.id, archiveState.entities)
               .map((id) => archiveState.entities[id])
               .filter((v) => !!v);
           }

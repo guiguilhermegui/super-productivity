@@ -1,3 +1,5 @@
+import { MAX_TASK_DEPTH } from '../features/tasks/task.model';
+
 // Cap clipboard size to keep the parser from blocking the main thread on
 // pathological inputs. Tracks roughly 10k task lines at ~80 chars each.
 const MAX_INPUT_LENGTH = 800_000;
@@ -29,6 +31,7 @@ export interface ParsedMarkdownSubTask {
   title: string;
   isCompleted: boolean;
   notes?: string;
+  subTasks?: ParsedMarkdownSubTask[];
 }
 
 export interface MarkdownTaskStructure {
@@ -136,6 +139,26 @@ const formatAsCheckboxLine = (item: ParsedLine): string => {
 const buildNotesFromNestedItems = (nestedItems: ParsedLine[]): string =>
   nestedItems.map(formatAsCheckboxLine).join('\n');
 
+type ParsedMarkdownNode = ParsedMarkdownTask | ParsedMarkdownSubTask;
+
+const createParsedMarkdownNode = (line: ParsedLine): ParsedMarkdownNode => ({
+  title: line.content,
+  isCompleted: line.isCompleted,
+});
+
+const appendLineAsNote = (task: ParsedMarkdownNode, line: ParsedLine): void => {
+  const noteLine = formatAsCheckboxLine(line);
+  task.notes = task.notes ? `${task.notes}\n${noteLine}` : noteLine;
+};
+
+const removeEmptySubTaskArrays = (task: ParsedMarkdownNode): void => {
+  if (!task.subTasks?.length) {
+    delete task.subTasks;
+    return;
+  }
+  task.subTasks.forEach(removeEmptySubTaskArrays);
+};
+
 export const convertToMarkdownNotes = (text: string): string | null => {
   const parsedLines = parseLines(text);
   if (!parsedLines) {
@@ -155,95 +178,38 @@ export const parseMarkdownTasksWithStructure = (
 
   const tasks: ParsedMarkdownTask[] = [];
   let totalSubTasks = 0;
-  let i = 0;
+  const stack: {
+    indentLevel: number;
+    task: ParsedMarkdownNode;
+    depth: number;
+  }[] = [];
 
-  while (i < parsedLines.length) {
-    const currentLine = parsedLines[i];
+  for (const line of parsedLines) {
+    while (stack.length && line.indentLevel <= stack[stack.length - 1].indentLevel) {
+      stack.pop();
+    }
 
-    // Only process top-level items (indentLevel 0) as main tasks
-    if (currentLine.indentLevel === 0) {
-      const task: ParsedMarkdownTask = {
-        title: currentLine.content,
-        isCompleted: currentLine.isCompleted,
-        subTasks: [],
-      };
+    const parent = stack[stack.length - 1];
+    const task = createParsedMarkdownNode(line);
 
-      // Look ahead for nested items and determine the first sub-task level
-      let j = i + 1;
-      let firstSubTaskLevel: number | null = null;
-
-      // Find the first level of sub-tasks for this main task
-      while (j < parsedLines.length && parsedLines[j].indentLevel > 0) {
-        if (firstSubTaskLevel === null) {
-          firstSubTaskLevel = parsedLines[j].indentLevel;
-        }
-
-        const subLine = parsedLines[j];
-
-        if (subLine.indentLevel === firstSubTaskLevel) {
-          // This is a direct sub-task
-          const subTask: ParsedMarkdownSubTask = {
-            title: subLine.content,
-            isCompleted: subLine.isCompleted,
-          };
-
-          // Look ahead for deeper nested items (indentLevel > firstSubTaskLevel) to add as notes
-          const deepNestedItems: ParsedLine[] = [];
-          let k = j + 1;
-
-          while (
-            k < parsedLines.length &&
-            parsedLines[k].indentLevel > firstSubTaskLevel
-          ) {
-            deepNestedItems.push(parsedLines[k]);
-            k++;
-          }
-
-          // If there are deeper nested items, add them as notes
-          if (deepNestedItems.length > 0) {
-            subTask.notes = buildNotesFromNestedItems(deepNestedItems);
-          }
-
-          task.subTasks!.push(subTask);
-          totalSubTasks++;
-          j = k; // Skip the processed nested items
-        } else if (subLine.indentLevel > firstSubTaskLevel) {
-          // This is a deeper nested item, should be handled by the sub-task above
-          j++;
-        } else {
-          // This is a new main task, break out
-          break;
-        }
+    if (!parent) {
+      // After indentation normalization, only level 0 can start a new main task.
+      if (line.indentLevel !== 0) {
+        continue;
       }
-
-      // If no sub-tasks were found but there were nested items, add them as notes to the main task
-      if (task.subTasks!.length === 0) {
-        const nestedItems: ParsedLine[] = [];
-        let k = i + 1;
-
-        while (k < parsedLines.length && parsedLines[k].indentLevel > 0) {
-          nestedItems.push(parsedLines[k]);
-          k++;
-        }
-
-        if (nestedItems.length > 0) {
-          task.notes = buildNotesFromNestedItems(nestedItems);
-        }
-        j = k;
-      }
-
-      // Remove empty subTasks array if no sub-tasks
-      if (task.subTasks!.length === 0) {
-        delete task.subTasks;
-      }
-
-      tasks.push(task);
-      i = j; // Skip the nested items we just processed
+      tasks.push(task as ParsedMarkdownTask);
+      stack.push({ indentLevel: line.indentLevel, task, depth: 1 });
+    } else if (parent.depth < MAX_TASK_DEPTH) {
+      parent.task.subTasks = parent.task.subTasks || [];
+      parent.task.subTasks.push(task as ParsedMarkdownSubTask);
+      totalSubTasks++;
+      stack.push({ indentLevel: line.indentLevel, task, depth: parent.depth + 1 });
     } else {
-      // This shouldn't happen if we process correctly, but skip just in case
-      i++;
+      appendLineAsNote(parent.task, line);
     }
   }
+
+  tasks.forEach(removeEmptySubTaskArrays);
 
   // Return structure only if we found at least one main task
   return tasks.length > 0 ? { mainTasks: tasks, totalSubTasks } : null;

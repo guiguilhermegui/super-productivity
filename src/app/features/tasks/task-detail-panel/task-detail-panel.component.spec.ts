@@ -44,12 +44,20 @@ describe('TaskDetailPanelComponent paste handler', () => {
     ]);
     const mockTaskService = jasmine.createSpyObj(
       'TaskService',
-      ['update', 'setSelectedId', 'focusTaskIfPossible', 'addSubTaskTo'],
+      [
+        'update',
+        'setSelectedId',
+        'focusTaskIfPossible',
+        'addSubTaskTo',
+        'addSubTaskNested',
+        'getTaskDepth',
+      ],
       {
         taskDetailPanelTargetPanel$: of(null),
         selectedTaskId: jasmine.createSpy().and.returnValue(null),
       },
     );
+    mockTaskService.getTaskDepth.and.returnValue(1);
     const mockLayoutService = jasmine.createSpyObj('LayoutService', [], {
       isShowList: jasmine.createSpy().and.returnValue(true),
     });

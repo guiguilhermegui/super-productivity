@@ -13,7 +13,12 @@ import {
   viewChild,
   viewChildren,
 } from '@angular/core';
-import { HideSubTasksMode, TaskDetailTargetPanel, TaskWithSubTasks } from '../task.model';
+import {
+  HideSubTasksMode,
+  MAX_TASK_DEPTH,
+  TaskDetailTargetPanel,
+  TaskWithSubTasks,
+} from '../task.model';
 import { IssueService } from '../../issue/issue.service';
 import { TaskAttachmentService } from '../task-attachment/task-attachment.service';
 import { of } from 'rxjs';
@@ -326,9 +331,11 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
   });
 
   // Template helper computed signals
+  taskDepth = computed(() => this.taskService.getTaskDepth(this.task().id));
+  isAtMaxTaskDepth = computed(() => this.taskDepth() >= MAX_TASK_DEPTH);
   isShowSubTasksPanel = computed(() => {
     const task = this.task();
-    return task && !task.parentId;
+    return task && (!this.isAtMaxTaskDepth() || !!task.subTasks?.length);
   });
 
   isSubTaskPanelExpandedInitially = computed(() => {
@@ -593,8 +600,10 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
   }
 
   addSubTask(): void {
-    const task = this.task();
-    this.taskService.addSubTaskTo(task.parentId || task.id);
+    if (this.isAtMaxTaskDepth()) {
+      return;
+    }
+    this.taskService.addSubTaskNested(this.task());
   }
 
   collapseParent(): void {

@@ -4,7 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { MockStore, provideMockStore } from '@ngrx/store/testing';
 import { TranslateModule } from '@ngx-translate/core';
-import { BehaviorSubject, of } from 'rxjs';
+import { BehaviorSubject, Observable, of, Subject } from 'rxjs';
 
 import { WorkViewComponent } from './work-view.component';
 import { TaskService } from '../tasks/task.service';
@@ -47,6 +47,9 @@ describe('WorkViewComponent', () => {
     let selectedTaskId: ReturnType<typeof signal<string | null>>;
     let setSelectedId: jasmine.Spy;
     let customized$: BehaviorSubject<{ list: TaskWithSubTasks[] }>;
+    // Indirection so a single test can swap in a source that hasn't emitted yet
+    // (a plain Subject) to exercise the sentinel/readiness guard.
+    let customizeSource: () => Observable<{ list: TaskWithSubTasks[] }>;
     let isCustomized: ReturnType<typeof signal<boolean>>;
     let activeWorkContextId: string;
     let store: MockStore;
@@ -71,6 +74,7 @@ describe('WorkViewComponent', () => {
       selectedTaskId = signal<string | null>(null);
       setSelectedId = jasmine.createSpy('setSelectedId');
       customized$ = new BehaviorSubject<{ list: TaskWithSubTasks[] }>({ list: [] });
+      customizeSource = () => customized$.asObservable();
       isCustomized = signal(false);
       activeWorkContextId = 'some-project-id';
 
@@ -99,7 +103,7 @@ describe('WorkViewComponent', () => {
           {
             provide: TaskViewCustomizerService,
             useValue: {
-              customizeUndoneTasks: () => customized$.asObservable(),
+              customizeUndoneTasks: () => customizeSource(),
               isCustomized,
             },
           },
@@ -197,6 +201,30 @@ describe('WorkViewComponent', () => {
       TestBed.flushEffects();
 
       expect(setSelectedId).not.toHaveBeenCalled();
+    });
+
+    it('does not deselect while the customized list has not emitted yet, then deselects once it does', async () => {
+      // isCustomized() flips synchronously, but customizeUndoneTasks defers the
+      // customized branch by one animation frame, so the list can lag. Use a
+      // source that has not emitted: the signal stays at the sentinel initial
+      // value and the deselect must be skipped (returning null) rather than
+      // firing against a not-yet-ready list.
+      const pendingCustomized$ = new Subject<{ list: TaskWithSubTasks[] }>();
+      customizeSource = () => pendingCustomized$;
+      isCustomized.set(true);
+
+      await createComponent({ undone: [buildTask('hidden-1')] });
+      selectedTaskId.set('hidden-1');
+      TestBed.flushEffects();
+
+      // List not ready yet -> skip, do not close the panel on the selected task.
+      expect(setSelectedId).not.toHaveBeenCalled();
+
+      // The filtered list lands without the selected task -> now it deselects.
+      pendingCustomized$.next({ list: [buildTask('other-1')] });
+      TestBed.flushEffects();
+
+      expect(setSelectedId).toHaveBeenCalledOnceWith(null);
     });
 
     it('keeps the selection when the task is in doneTasks (existing behaviour)', async () => {

@@ -1021,7 +1021,7 @@ describe('TaskViewCustomizerService', () => {
     };
     const restoredSavedFilter: FilterOption = {
       ...savedFilter,
-      label: T.F.TAG.D_EDIT.LABEL,
+      label: T.F.TASK_VIEW.CUSTOMIZER.FILTER_TAG,
     };
 
     const buildService = (

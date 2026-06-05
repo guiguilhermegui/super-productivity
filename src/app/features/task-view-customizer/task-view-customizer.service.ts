@@ -40,6 +40,12 @@ const GROUP_OPTIONS_NO_PROJECT = OPTIONS.group.list.filter(
   (opt) => opt.type !== GROUP_OPTION_TYPE.project,
 );
 
+/** Result of {@link TaskViewCustomizerService.customizeUndoneTasks}. */
+export interface CustomizedUndoneTasks {
+  list: TaskWithSubTasks[];
+  grouped?: Record<string, TaskWithSubTasks[]>;
+}
+
 @Injectable({ providedIn: 'root' })
 export class TaskViewCustomizerService {
   private store = inject(Store);
@@ -163,6 +169,11 @@ export class TaskViewCustomizerService {
     return stored;
   }
 
+  // Unlike _sanitizeGroupForContext (which passes the stored value through),
+  // re-resolve the option from the current OPTIONS.filter.list and keep only the
+  // user's `preset`. The persisted `label` can be stale after a translation-key
+  // change (the panel renders selectedFilter().label directly), so we always
+  // adopt the current label; an unknown stored `type` falls back to the default.
   private _sanitizeFilter(stored: FilterOption | undefined): FilterOption {
     if (!stored) return DEFAULT_OPTIONS.filter;
 
@@ -174,10 +185,9 @@ export class TaskViewCustomizerService {
       : DEFAULT_OPTIONS.filter;
   }
 
-  customizeUndoneTasks(undoneTasks$: Observable<TaskWithSubTasks[]>): Observable<{
-    list: TaskWithSubTasks[];
-    grouped?: Record<string, TaskWithSubTasks[]>;
-  }> {
+  customizeUndoneTasks(
+    undoneTasks$: Observable<TaskWithSubTasks[]>,
+  ): Observable<CustomizedUndoneTasks> {
     return combineLatest([
       undoneTasks$,
       toObservable(this.selectedSort),

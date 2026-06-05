@@ -42,7 +42,10 @@ import { T } from '../../t.const';
 import { workViewProjectChangeAnimation } from '../../ui/animations/work-view-project-change.ani';
 import { WorkContextService } from '../work-context/work-context.service';
 import { ProjectService } from '../project/project.service';
-import { TaskViewCustomizerService } from '../task-view-customizer/task-view-customizer.service';
+import {
+  CustomizedUndoneTasks,
+  TaskViewCustomizerService,
+} from '../task-view-customizer/task-view-customizer.service';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { SectionService } from '../section/section.service';
 import { Section } from '../section/section.model';
@@ -88,11 +91,9 @@ import { DateService } from '../../core/date/date.service';
 import { PluginIndexComponent } from '../../plugins/ui/plugin-index/plugin-index.component';
 import { PluginBridgeService } from '../../plugins/plugin-bridge.service';
 
-interface CustomizedUndoneTasks {
-  list: TaskWithSubTasks[];
-  grouped?: Record<string, TaskWithSubTasks[]>;
-}
-
+// Stable reference used as the toSignal initial value below so the deselect
+// effect can tell "the customized list hasn't emitted yet" apart from a
+// genuinely empty filtered result. See _getVisibleUndoneTasksForSelection.
 const INITIAL_CUSTOMIZED_UNDONE_TASKS: CustomizedUndoneTasks = { list: [] };
 
 @Component({
@@ -534,13 +535,27 @@ export class WorkViewComponent implements OnInit, OnDestroy {
     );
   }
 
+  /**
+   * The list of undone tasks actually visible to the user, used by the deselect
+   * effect to decide whether the selected task has been filtered out of view.
+   * Returns `null` while a customizer filter is active but its list has not
+   * emitted yet — the caller then skips deselecting for this run.
+   *
+   * `isCustomized()` is synchronous, but `customizeUndoneTasks` defers the
+   * customized branch by one animation frame (observeOn(animationFrameScheduler)),
+   * so the two can be momentarily out of step. Until the first emission `toSignal`
+   * still holds the exact INITIAL_CUSTOMIZED_UNDONE_TASKS reference; compare by
+   * identity (not by length) so a genuinely empty filtered result `{ list: [] }`
+   * still counts as "ready" and correctly deselects a now-hidden task.
+   */
   private _getVisibleUndoneTasksForSelection(): TaskWithSubTasks[] | null {
     if (!this.customizerService.isCustomized()) {
       return this.undoneTasks();
     }
 
     const customized = this.customizedUndoneTasks();
-    return customized === INITIAL_CUSTOMIZED_UNDONE_TASKS ? null : customized.list;
+    const isCustomizedListReady = customized !== INITIAL_CUSTOMIZED_UNDONE_TASKS;
+    return isCustomizedListReady ? customized.list : null;
   }
 
   private _focusItemInWorkViewWhenReady(

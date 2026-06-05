@@ -136,7 +136,7 @@
     [class.active]="customizerService.selectedFilter().type === OPTIONS.filter.types.tag"
   >
     <span class="menu-item-content">
-      <span>{{ T.F.TAG.D_EDIT.LABEL | translate }}</span>
+      <span>{{ T.F.TASK_VIEW.CUSTOMIZER.FILTER_TAG | translate }}</span>
       @if (customizerService.selectedFilter().type === OPTIONS.filter.types.tag) {
         <mat-icon class="check-icon">check</mat-icon>
       }
@@ -256,7 +256,7 @@
             : ''
         "
         (ngModelChange)="onFilterInputChange(OPTIONS.filter.types.tag, $event)"
-        [placeholder]="T.F.TAG.D_EDIT.LABEL | translate"
+        [placeholder]="T.F.TASK_VIEW.CUSTOMIZER.ENTER_TAG | translate"
         (keydown.enter)="$event.stopPropagation()"
       />
     </mat-form-field>

@@ -124,6 +124,15 @@
           android:scheme="com.superproductivity.superproductivity"
           android:pathPrefix="/plugin-oauth-callback" />
       </intent-filter>
+      
+      <!-- App Links: Support to openning web links (http/https) in app -->
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" />
+        <data android:host="app.superproductivity.com" /> 
+      </intent-filter>
     </activity>
 
     <activity

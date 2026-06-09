@@ -103,6 +103,16 @@ import {
 import { getDbDateStr } from '../util/get-db-date-str';
 import { DataInitService } from '../core/data-init/data-init.service';
 
+interface PluginNodeExecutionElectronApi {
+  requestGrant(pluginId: string): Promise<{ token: string } | null>;
+  executeScript(
+    pluginId: string,
+    grantToken: string,
+    request: PluginNodeScriptRequest,
+  ): Promise<PluginNodeScriptResult>;
+  revokeGrant(pluginId: string, grantToken: string): Promise<void>;
+}
+
 /**
  * PluginBridge acts as an intermediary layer between plugins and the main application services.
  * This provides:
@@ -138,6 +148,8 @@ export class PluginBridgeService implements OnDestroy {
   private _pluginOAuthBridge = inject(PluginOAuthBridgeService);
   private _dataInitService = inject(DataInitService);
   private _globalConfigService = inject(GlobalConfigService);
+  readonly #nodeExecutionGrantTokens = new Map<string, string>();
+  readonly #nodeExecutionApi = this._consumeNodeExecutionApi();
 
   // Track header buttons registered by plugins
   private readonly _headerButtons = signal<PluginHeaderBtnCfg[]>([]);
@@ -1638,6 +1650,32 @@ export class PluginBridgeService implements OnDestroy {
     );
   }
 
+  setNodeExecutionGrantToken(pluginId: string, grantToken: string): void {
+    this.#nodeExecutionGrantTokens.set(pluginId, grantToken);
+  }
+
+  hasNodeExecutionGrantToken(pluginId: string): boolean {
+    return this.#nodeExecutionGrantTokens.has(pluginId);
+  }
+
+  getNodeExecutionGrantToken(pluginId: string): string | undefined {
+    return this.#nodeExecutionGrantTokens.get(pluginId);
+  }
+
+  async requestNodeExecutionGrant(pluginId: string): Promise<{ token: string } | null> {
+    return (await this.#nodeExecutionApi?.requestGrant(pluginId)) ?? null;
+  }
+
+  revokeNodeExecutionGrantToken(pluginId: string): string | undefined {
+    const token = this.#nodeExecutionGrantTokens.get(pluginId);
+    this.#nodeExecutionGrantTokens.delete(pluginId);
+    return token;
+  }
+
+  async revokeNodeExecutionGrant(pluginId: string, grantToken: string): Promise<void> {
+    await this.#nodeExecutionApi?.revokeGrant(pluginId, grantToken);
+  }
+
   /**
    * Internal method to execute Node.js script
    */
@@ -1646,7 +1684,7 @@ export class PluginBridgeService implements OnDestroy {
     manifest: PluginManifest | null,
     request: PluginNodeScriptRequest,
   ): Promise<PluginNodeScriptResult> {
-    if (!IS_ELECTRON) {
+    if (!this._isElectronRuntime()) {
       return {
         success: false,
         error: this._translateService.instant(T.PLUGINS.NODE_ONLY_DESKTOP),
@@ -1663,8 +1701,17 @@ export class PluginBridgeService implements OnDestroy {
         };
       }
 
-      // Check if Electron API is available
-      if (!window.ea || typeof window.ea.pluginExecNodeScript !== 'function') {
+      const grantToken = this.#nodeExecutionGrantTokens.get(pluginId);
+      if (!grantToken) {
+        return {
+          success: false,
+          error: this._translateService.instant(
+            T.PLUGINS.NODE_EXECUTION_PERMISSION_DENIED,
+          ),
+        };
+      }
+
+      if (!this.#nodeExecutionApi) {
         return {
           success: false,
           error: this._translateService.instant(T.PLUGINS.ELECTRON_API_NOT_AVAILABLE),
@@ -1672,7 +1719,11 @@ export class PluginBridgeService implements OnDestroy {
       }
 
       // Call Electron main process via IPC
-      const result = await window.ea.pluginExecNodeScript(pluginId, manifest, request);
+      const result = await this.#nodeExecutionApi.executeScript(
+        pluginId,
+        grantToken,
+        request,
+      );
 
       return result;
     } catch (error) {
@@ -1685,6 +1736,17 @@ export class PluginBridgeService implements OnDestroy {
             : this._translateService.instant(T.PLUGINS.FAILED_TO_EXECUTE_SCRIPT),
       };
     }
+  }
+
+  private _isElectronRuntime(): boolean {
+    return IS_ELECTRON;
+  }
+
+  private _consumeNodeExecutionApi(): PluginNodeExecutionElectronApi | null {
+    if (!window.ea || typeof window.ea.consumePluginNodeExecutionApi !== 'function') {
+      return null;
+    }
+    return window.ea.consumePluginNodeExecutionApi();
   }
 
   /**

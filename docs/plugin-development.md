@@ -103,7 +103,7 @@ The `manifest.json` file is required for all plugins and defines the plugin's me
 | `icon`            | string   |          | Path to icon file (SVG recommended)                                                    |
 | `iFrame`          | boolean  |          | Whether plugin uses iframe UI (default: false)                                         |
 | `sidePanel`       | boolean  |          | Show plugin in side panel (default: false), requires `iFrame:true`                     |
-| `permissions`     | string[] |          | The permissions the plugin needs (e.g., ["nodeExecution"])                             |
+| `permissions`     | string[] |          | The permissions the plugin needs                                                       |
 | `hooks`           | string[] |          | App events to listen to                                                                |
 | `uiKit`           | boolean  |          | Enable UI Kit CSS reset for iframe plugins (default: true). Set to `false` to disable. |
 
@@ -122,7 +122,7 @@ The `manifest.json` file is required for all plugins and defines the plugin's me
   "icon": "icon.svg",
   "iFrame": true,
   "sidePanel": false,
-  "permissions": ["nodeExecution"],
+  "permissions": ["getTasks", "updateTask"],
   "hooks": ["taskComplete", "taskUpdate", "currentTaskChange"]
 }
 ```
@@ -540,7 +540,12 @@ console.log(data); // '{ count: 42 }'
 ### Node.js Script Execution
 
 Plugins with `"permissions": ["nodeExecution"]` can run Node.js scripts in the Electron
-desktop app.
+desktop app after the user allows the desktop permission prompt.
+
+The desktop grant is currently issued only for packaged built-in plugins whose
+manifest can be verified by the main process. Uploaded plugins that request
+`nodeExecution` are rejected until uploaded plugin installation is moved to a
+main-process-owned verification path.
 
 ```javascript
 const result = await plugin.executeNodeScript({

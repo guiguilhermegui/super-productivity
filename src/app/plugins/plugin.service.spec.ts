@@ -22,6 +22,7 @@ import { PluginInstance, PluginManifest } from './plugin-api.model';
 import { PluginService } from './plugin.service';
 import { PluginState } from './plugin-state.model';
 import { PluginBridgeService } from './plugin-bridge.service';
+import { T } from '../t.const';
 
 describe('PluginService', () => {
   let service: PluginService;
@@ -328,6 +329,69 @@ describe('PluginService', () => {
         instance: undefined,
         error: 'broken',
       }),
+    );
+  });
+
+  it('does not serve iframe HTML for plugins that are not loaded and enabled', () => {
+    const manifest: PluginManifest = {
+      ...mockManifest,
+      id: 'blocked-iframe',
+      name: 'Blocked Iframe',
+      iFrame: true,
+    };
+    (
+      service as unknown as {
+        _setPluginState: (pluginId: string, state: PluginState) => void;
+        _pluginIndexHtml: Map<string, string>;
+      }
+    )._setPluginState(manifest.id, {
+      manifest,
+      status: 'error',
+      path: 'uploaded://blocked-iframe',
+      type: 'uploaded',
+      isEnabled: false,
+      error: T.PLUGINS.NODE_EXECUTION_PERMISSION_DENIED,
+    });
+    (
+      service as unknown as {
+        _pluginIndexHtml: Map<string, string>;
+      }
+    )._pluginIndexHtml.set(manifest.id, '<html>blocked</html>');
+
+    expect(service.getPluginIndexHtml(manifest.id)).toBeNull();
+  });
+
+  it('bumps iframe generation when unloading a plugin runtime', () => {
+    const instance: PluginInstance = {
+      manifest: mockManifest,
+      loaded: true,
+      isEnabled: true,
+    };
+    (
+      service as unknown as {
+        _loadedPlugins: PluginInstance[];
+        _setPluginState: (pluginId: string, state: PluginState) => void;
+      }
+    )._loadedPlugins = [instance];
+    (
+      service as unknown as {
+        _setPluginState: (pluginId: string, state: PluginState) => void;
+      }
+    )._setPluginState(mockManifest.id, {
+      manifest: mockManifest,
+      status: 'loaded',
+      path: 'uploaded://test-plugin',
+      type: 'uploaded',
+      isEnabled: true,
+      instance,
+    });
+
+    const generationBeforeUnload = service.getPluginIframeGeneration(mockManifest.id);
+
+    service.unloadPlugin(mockManifest.id);
+
+    expect(service.getPluginIframeGeneration(mockManifest.id)).toBe(
+      generationBeforeUnload + 1,
     );
   });
 

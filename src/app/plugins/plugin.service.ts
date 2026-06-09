@@ -103,6 +103,7 @@ export class PluginService implements OnDestroy {
   private _pluginPaths: Map<string, string> = new Map(); // Store plugin ID -> path mapping
   private _pluginIndexHtml: Map<string, string> = new Map(); // Store plugin ID -> index.html content
   private _pluginIcons: Map<string, string> = new Map(); // Store plugin ID -> SVG icon content
+  private _pluginIframeGenerations: Map<string, number> = new Map();
   private _pluginIconsSignal = signal<Map<string, string>>(new Map());
 
   // Lazy loading state management
@@ -679,6 +680,7 @@ export class PluginService implements OnDestroy {
     const pluginId = instance.manifest.id;
     const errorMsg = error instanceof Error ? error.message : String(error);
     PluginLog.err(`onReady failed for plugin ${pluginId}:`, error);
+    this._bumpPluginIframeGeneration(pluginId);
 
     try {
       this._pluginRunner.unloadPlugin(pluginId);
@@ -998,6 +1000,10 @@ export class PluginService implements OnDestroy {
     return this._pluginPaths.get(pluginId);
   }
 
+  getPluginIframeGeneration(pluginId: string): number {
+    return this._pluginIframeGenerations.get(pluginId) ?? 0;
+  }
+
   isInitialized(): boolean {
     return this._isInitialized;
   }
@@ -1006,6 +1012,9 @@ export class PluginService implements OnDestroy {
    * Get index.html content for a plugin
    */
   getPluginIndexHtml(pluginId: string): string | null {
+    if (!this._canServePluginIndexHtml(pluginId)) {
+      return null;
+    }
     return this._pluginIndexHtml.get(pluginId) || null;
   }
 
@@ -1080,6 +1089,10 @@ export class PluginService implements OnDestroy {
    * Load plugin index.html content
    */
   async loadPluginIndexHtml(pluginId: string): Promise<string | null> {
+    if (!this._canServePluginIndexHtml(pluginId)) {
+      return null;
+    }
+
     // First check if we already have it cached
     const cached = this._pluginIndexHtml.get(pluginId);
     if (cached) {
@@ -1091,12 +1104,26 @@ export class PluginService implements OnDestroy {
     if (pluginPath?.startsWith('uploaded://')) {
       const cachedPlugin = await this._pluginCacheService.getPlugin(pluginId);
       if (cachedPlugin?.indexHtml) {
+        if (!this._canServePluginIndexHtml(pluginId)) {
+          return null;
+        }
         this._pluginIndexHtml.set(pluginId, cachedPlugin.indexHtml);
         return cachedPlugin.indexHtml;
       }
     }
 
     return null;
+  }
+
+  private _canServePluginIndexHtml(pluginId: string): boolean {
+    const state = this._getPluginState(pluginId);
+    return (
+      !!state &&
+      state.status === 'loaded' &&
+      state.isEnabled &&
+      state.instance?.loaded === true &&
+      !state.error
+    );
   }
 
   async dispatchHook(hookName: Hooks, payload?: unknown): Promise<void> {
@@ -1570,6 +1597,8 @@ export class PluginService implements OnDestroy {
    * without changing isEnabled or _pluginStates. Used for re-upload and reload.
    */
   private _teardownPluginRuntime(pluginId: string): void {
+    this._bumpPluginIframeGeneration(pluginId);
+
     // Close the side panel if this plugin is active
     const activePluginId = this.getActiveSidePanelPluginId();
     if (activePluginId === pluginId) {
@@ -1599,6 +1628,13 @@ export class PluginService implements OnDestroy {
     // Best-effort and fire-and-forget because teardown is synchronous.
     void this._revokeNodeExecutionGrant(pluginId).catch((e) =>
       PluginLog.err(`Failed to revoke nodeExecution grant for ${pluginId}`, e),
+    );
+  }
+
+  private _bumpPluginIframeGeneration(pluginId: string): void {
+    this._pluginIframeGenerations.set(
+      pluginId,
+      this.getPluginIframeGeneration(pluginId) + 1,
     );
   }
 

@@ -327,6 +327,43 @@ describe('markedOptionsFactory', () => {
       } as any);
       expect(result).toContain('title=""');
     });
+
+    // GHSA-hr87-735w-hfq3: the rendered href is passed verbatim to
+    // shell.openExternal on click, so unsafe schemes must never become anchors.
+    describe('unsafe URL schemes (GHSA-hr87-735w-hfq3)', () => {
+      const mockParser = {
+        parseInline: (tokens: any[]) =>
+          tokens.map((t: any) => t.raw || t.text || '').join(''),
+      };
+
+      ['ms-calculator:', 'javascript:alert(1)', 'ssh://h', '\\\\host\\share'].forEach(
+        (href) => {
+          it(`renders "${href}" as inert text, not an anchor`, () => {
+            const linkRenderer = options.renderer!.link.bind({ parser: mockParser });
+            const result = linkRenderer({
+              href,
+              title: 'x',
+              tokens: [{ type: 'text', raw: 'Click here', text: 'Click here' }],
+            } as any);
+            expect(result).not.toContain('<a ');
+            expect(result).not.toContain(`href="${href}"`);
+            expect(result).toContain('Click here');
+          });
+        },
+      );
+
+      it('still renders allowed schemes (mailto:, file:) as anchors', () => {
+        const linkRenderer = options.renderer!.link.bind({ parser: mockParser });
+        ['mailto:a@b.com', 'file:///tmp/x', 'https://example.com'].forEach((href) => {
+          const result = linkRenderer({
+            href,
+            title: '',
+            tokens: [{ type: 'text', raw: 'L', text: 'L' }],
+          } as any);
+          expect(result).toContain(`href="${href}"`);
+        });
+      });
+    });
   });
 
   describe('image renderer', () => {

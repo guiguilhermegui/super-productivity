@@ -13,6 +13,7 @@ import { errorHandlerWithFrontendInform } from './error-handler-with-frontend-in
 import * as path from 'path';
 import { join, normalize } from 'path';
 import { IPC } from './shared-with-frontend/ipc-events.const';
+import { isExternalUrlSchemeAllowed } from './shared-with-frontend/is-external-url-allowed';
 import { readFileSync, stat, writeFileSync } from 'fs';
 import { error, log } from 'electron-log/main';
 import { IS_MAC, IS_GNOME_DESKTOP } from './common.const';
@@ -413,6 +414,14 @@ export const setWasMaximizedBeforeHide = (value: boolean): void => {
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 function initWinEventListeners(app: Electron.App): void {
   const openUrlInBrowser = (url: string): void => {
+    // Defense in depth: never hand an unsafe scheme to the OS handler, even if
+    // a renderer-side guard is bypassed (e.g. a link click that falls through
+    // to navigation rather than the explicit openExternalUrl IPC). The blocked
+    // schemes are OS protocol handlers / UNC paths. See GHSA-hr87-735w-hfq3.
+    if (!isExternalUrlSchemeAllowed(url)) {
+      error('Refused to open URL with disallowed scheme via openExternal');
+      return;
+    }
     // needed for mac; especially for jira urls we might have a host like this www.host.de//
     const urlObj = new URL(url);
     urlObj.pathname = urlObj.pathname.replace('//', '/');

@@ -1,6 +1,7 @@
 import {
   ALLOWED_EXTERNAL_URL_SCHEMES,
   isExternalUrlSchemeAllowed,
+  isUncPath,
 } from '../../../electron/shared-with-frontend/is-external-url-allowed';
 
 describe('isExternalUrlSchemeAllowed', () => {
@@ -43,11 +44,37 @@ describe('isExternalUrlSchemeAllowed', () => {
       'tel:+123456789',
       '\\\\192.168.1.100\\share', // UNC / SMB — NTLM hash capture
       '/\\192.168.1.100\\share',
+      // file: with a remote authority is the same SMB / NTLM-leak vector and
+      // must be blocked even though `file:` is allow-listed for local files.
+      'file://192.168.1.100/share/x',
+      'file:////host/share', // path-based UNC, empty host
+      'file://///host/share',
+      'file:\\\\host\\share',
+      'FILE://HOST/share', // case-insensitive
     ];
     blocked.forEach((url) => {
       it(`blocks "${url}"`, () => {
         expect(isExternalUrlSchemeAllowed(url)).toBe(false);
       });
+    });
+
+    it('still allows LOCAL file: URLs (Windows drive + POSIX paths)', () => {
+      expect(isExternalUrlSchemeAllowed('file:///home/user/notes.txt')).toBe(true);
+      expect(isExternalUrlSchemeAllowed('file:///C:/Users/me/doc.pdf')).toBe(true);
+    });
+  });
+
+  describe('isUncPath', () => {
+    it('flags UNC / network paths', () => {
+      ['\\\\host\\share', '//host/share', '/\\host', '\\/host', '  \\\\host\\s'].forEach(
+        (p) => expect(isUncPath(p)).toBe(true),
+      );
+    });
+
+    it('does not flag local absolute paths or non-strings', () => {
+      ['/home/user/x', 'C:\\Users\\me', './rel', '', '/', 'x', undefined, null].forEach(
+        (p) => expect(isUncPath(p as unknown as string)).toBe(false),
+      );
     });
   });
 

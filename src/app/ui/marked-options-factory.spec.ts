@@ -363,6 +363,23 @@ describe('markedOptionsFactory', () => {
           expect(result).toContain(`href="${href}"`);
         });
       });
+
+      // marked passes link destinations through verbatim; with disableSanitizer
+      // an unescaped quote in the href breaks out of the attribute and injects
+      // an event handler. The href/title must be HTML-escaped.
+      it('escapes a quote-injection href so it cannot break out of the attribute', () => {
+        const linkRenderer = options.renderer!.link.bind({ parser: mockParser });
+        const result = linkRenderer({
+          href: 'https://example.com/" onmouseover="alert(1)',
+          title: 'a"b',
+          tokens: [{ type: 'text', raw: 'L', text: 'L' }],
+        } as any);
+        expect(result).not.toContain('onmouseover="alert(1)"');
+        expect(result).toContain('&quot;');
+        expect(result).toContain(
+          'href="https://example.com/&quot; onmouseover=&quot;alert(1)"',
+        );
+      });
     });
   });
 

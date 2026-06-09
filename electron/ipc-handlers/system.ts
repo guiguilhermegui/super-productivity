@@ -2,17 +2,17 @@ import { app, dialog, ipcMain, shell } from 'electron';
 import { IPC } from '../shared-with-frontend/ipc-events.const';
 import {
   isExternalUrlSchemeAllowed,
-  isUncPath,
+  isPathSafeToOpen,
 } from '../shared-with-frontend/is-external-url-allowed';
 import { getWin } from '../main-window';
 
 export const initSystemIpc = (): void => {
   ipcMain.on(IPC.OPEN_PATH, (ev, path: string) => {
-    // Block UNC / network paths (\\host\share, //host/share): shell.openPath
-    // would trigger an SMB connection and leak the user's NTLM hash. FILE-type
-    // task-attachment paths are synced and thus attacker-controllable.
-    // See GHSA-hr87-735w-hfq3.
-    if (isUncPath(path)) {
+    // Block UNC / network paths and remote file:// URLs: shell.openPath would
+    // resolve \\host\share (and file://host/share) to an SMB connection and leak
+    // the user's NTLM hash. FILE-type task-attachment paths are synced and thus
+    // attacker-controllable. See GHSA-hr87-735w-hfq3.
+    if (!isPathSafeToOpen(path)) {
       return;
     }
     shell.openPath(path);

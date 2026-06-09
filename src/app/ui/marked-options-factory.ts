@@ -1,5 +1,6 @@
 import { MarkedOptions, MarkedRenderer } from 'ngx-markdown';
 import { Hooks, Token } from 'marked';
+import { isExternalUrlSchemeAllowed } from '../../../electron/shared-with-frontend/is-external-url-allowed';
 
 /**
  * Parses image sizing syntax from title attribute.
@@ -99,6 +100,12 @@ export const markedOptionsFactory = (): MarkedOptions => {
     tokens: Token[];
   }) {
     const text = tokens ? this.parser.parseInline(tokens) : '';
+    // Block unsafe URL schemes from rendering as clickable links. On click the
+    // href is passed verbatim to shell.openExternal (Electron), which would let
+    // note content silently invoke OS protocol handlers. See GHSA-hr87-735w-hfq3.
+    if (!isExternalUrlSchemeAllowed(href)) {
+      return `<span class="markdown-blocked-link" title="Link blocked: unsafe URL scheme">${text}</span>`;
+    }
     return `<a target="_blank" href="${href}" title="${title || ''}">${text}</a>`;
   };
 

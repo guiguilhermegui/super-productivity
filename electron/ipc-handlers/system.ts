@@ -1,10 +1,18 @@
 import { app, dialog, ipcMain, shell } from 'electron';
 import { IPC } from '../shared-with-frontend/ipc-events.const';
+import { isExternalUrlSchemeAllowed } from '../shared-with-frontend/is-external-url-allowed';
 import { getWin } from '../main-window';
 
 export const initSystemIpc = (): void => {
   ipcMain.on(IPC.OPEN_PATH, (ev, path: string) => shell.openPath(path));
-  ipcMain.on(IPC.OPEN_EXTERNAL, (ev, url: string) => shell.openExternal(url));
+  ipcMain.on(IPC.OPEN_EXTERNAL, (ev, url: string) => {
+    // Defense in depth: never hand an unsafe scheme to the OS handler, even if
+    // the renderer-side guard is bypassed. See GHSA-hr87-735w-hfq3.
+    if (!isExternalUrlSchemeAllowed(url)) {
+      return;
+    }
+    shell.openExternal(url);
+  });
 
   ipcMain.on(
     IPC.SHOW_EMOJI_PANEL,

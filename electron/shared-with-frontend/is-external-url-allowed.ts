@@ -70,3 +70,29 @@ export const isExternalUrlSchemeAllowed = (url: unknown): boolean => {
   }
   return true;
 };
+
+/**
+ * Returns true if a value is safe to hand to `shell.openPath` (which opens a
+ * filesystem path, not a URL). Rejects UNC paths AND `file:`-scheme values with
+ * a remote authority — `shell.openPath('file://host/share')` resolves to
+ * `\\host\share` on Windows, the same NTLM-leak `isUncPath` blocks for the raw
+ * form. Plain local paths (`/home/x`, `C:\x`, `./rel`) are allowed.
+ * See GHSA-hr87-735w-hfq3.
+ */
+export const isPathSafeToOpen = (path: unknown): boolean => {
+  if (typeof path !== 'string') {
+    return false;
+  }
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (isUncPath(trimmed)) {
+    return false;
+  }
+  // A file:-scheme value must be a LOCAL file URL, not a remote authority.
+  if (trimmed.toLowerCase().startsWith('file:')) {
+    return isExternalUrlSchemeAllowed(trimmed);
+  }
+  return true;
+};

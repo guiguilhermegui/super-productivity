@@ -1,6 +1,7 @@
 import {
   ALLOWED_EXTERNAL_URL_SCHEMES,
   isExternalUrlSchemeAllowed,
+  isPathSafeToOpen,
   isUncPath,
 } from '../../../electron/shared-with-frontend/is-external-url-allowed';
 
@@ -75,6 +76,30 @@ describe('isExternalUrlSchemeAllowed', () => {
       ['/home/user/x', 'C:\\Users\\me', './rel', '', '/', 'x', undefined, null].forEach(
         (p) => expect(isUncPath(p as unknown as string)).toBe(false),
       );
+    });
+  });
+
+  describe('isPathSafeToOpen (shell.openPath gate)', () => {
+    it('allows local filesystem paths and local file:// URLs', () => {
+      [
+        '/home/user/doc.pdf',
+        'C:\\Users\\me\\doc.pdf',
+        './rel/x',
+        'file:///home/x',
+      ].forEach((p) => expect(isPathSafeToOpen(p)).toBe(true));
+    });
+
+    it('blocks UNC paths AND remote file:// URLs (NTLM leak via shell.openPath)', () => {
+      [
+        '\\\\host\\share',
+        '//host/share',
+        'file://host/share',
+        'file://192.168.1.100/share/x',
+        'file:////host/share',
+        '',
+        undefined,
+        null,
+      ].forEach((p) => expect(isPathSafeToOpen(p as unknown as string)).toBe(false));
     });
   });
 
